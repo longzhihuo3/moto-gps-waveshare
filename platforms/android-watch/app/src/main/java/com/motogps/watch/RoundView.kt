@@ -312,24 +312,24 @@ class RoundView(context: Context) : View(context) {
         val dispLat = if (!dispLatE6.isNaN()) dispLatE6 else scene?.originLatE6?.toDouble() ?: return
         val dispLon = if (!dispLonE6.isNaN()) dispLonE6 else scene?.originLonE6?.toDouble() ?: return
 
+        // 重建键只含数据版本（场景/路线内容），**不含 GPS 原点**——位置变化由
+        // drawNavigation 的 uOff/vOff 平移处理，否则每次 GPS 定位更新（5Hz）都会
+        // 触发整张位图擦除重画（几十条路径×5次/秒），这是大幅运动残余卡顿的真凶。
+        // 位图仅在：数据版本变化，或显示原点漂离位图中心超过 45m（接近覆盖边界）时重建。
         var key = 1125899906842597L
         if (scene != null) {
             key = key * 31 + scene.sceneRevision
-            key = key * 31 + scene.originLatE6
-            key = key * 31 + scene.originLonE6
         }
         if (routeVisible && route != null) {
             key = key * 31 + route.routeToken
             key = key * 31 + route.generation
-            key = key * 31 + route.originLatE6
-            key = key * 31 + route.originLonE6
         }
         val needSize = (radius * 2f * 1.45f).toInt()
         val driftM = if (mapBitmap == null) Double.MAX_VALUE else kotlin.math.hypot(
             (dispLat - bmpOriginLatE6) / 1e6 * 111_320.0,
             (dispLon - bmpOriginLonE6) / 1e6 * bmpMPerDegLon,
         )
-        if (mapBitmap != null && key == lastMapKey && mapBitmap!!.width == needSize && driftM < 60.0) return
+        if (mapBitmap != null && key == lastMapKey && mapBitmap!!.width == needSize && driftM < 45.0) return
 
         if (mapBitmap == null || mapBitmap!!.width != needSize) {
             mapBitmap = Bitmap.createBitmap(needSize, needSize, Bitmap.Config.ARGB_8888)
