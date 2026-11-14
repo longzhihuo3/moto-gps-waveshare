@@ -88,9 +88,17 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
                     val dy = e2.y - (e1?.y ?: e2.y)
                     Log.d("MotoUI", "fling dx=$dx dy=$dy vx=$velocityX vy=$velocityY page=${uiState.page}")
                     if (abs(dx) > abs(dy) && abs(dx) > 60) {
-                        // 音乐页不入本地滑动循环：速度页左滑直接拉起系统音乐控制（不切本地页），
-                        // 避免过渡动画先闪出自绘音乐页（用户反馈「多了一页非系统音乐页」）。
-                        if (dx < 0 && uiState.page == 1) launchSystemMusicController()
+                        if (dx < 0 && uiState.page == 1) {
+                            // 音乐页不入本地滑动循环：直接拉起系统音乐控制（不切本地页）
+                            launchSystemMusicController()
+                        } else {
+                            // 拖拽未启动的斜向快滑兑底：直接带动画翻页（与拖拽同一提交链路）
+                            val target = uiState.page + if (dx < 0) 1 else -1
+                            if (target in 0..1) {
+                                roundView.beginPageSwipe(uiState.page, target)
+                                roundView.settlePageSwipe(target)
+                            }
+                        }
                         return true
                     }
                     val kind = when {
@@ -118,9 +126,10 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
                 MotionEvent.ACTION_MOVE -> {
                     val dx = event.x - downX
                     val dy = event.y - downY
-                    if (!dragging && abs(dx) > touchSlop && abs(dx) > abs(dy) * 1.3f) {
+                    if (!dragging && abs(dx) > touchSlop && abs(dx) > abs(dy)) {
                         // 本地滑动循环仅 0导航↔1速度；2 音乐只由手机快照驱动显示，
-                        // 不参与拖拽过渡（滑向音乐直接拉起系统音乐控制，见 onFling）
+                        // 不参与拖拽过渡（滑向音乐直接拉起系统音乐控制，见 onFling）。
+                        // 方向门限放宽为主轴判定，斜向滑动也能启动翻页。
                         val from = uiState.page
                         val target = from + if (dx < 0) 1 else -1
                         if (target in 0..1) {
@@ -137,9 +146,9 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
                     if (dragging) {
                         dragging = false
                         val from = uiState.page
-                        val forward = roundView.currentSwipeProgress > 0.42f ||
-                            (swipeTarget > from && flingVx < -900f) ||
-                            (swipeTarget < from && flingVx > 900f)
+                        val forward = roundView.currentSwipeProgress > 0.34f ||
+                            (swipeTarget > from && flingVx < -650f) ||
+                            (swipeTarget < from && flingVx > 650f)
                         roundView.settlePageSwipe(if (forward) swipeTarget else from)
                     }
                 }
@@ -269,17 +278,23 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
         )
     }
 
-    /**
-     * 滑动过渡结束后的页面提交（本地页：0导航 1速度；音乐页不进入拖拽循环）。
-     */
+    /** 滑动过渡结束后的页面提交（本地页：0导航 1速度；音乐页不进入拖拽循环）。 */
     private fun commitPage(target: Int) {
         val changed = target != uiState.page
+        if (changed) {
+            // 记录本次乐观切换的来源页：短暂时间窗内的旧快照回显将被忽略（防弹回）
+            pageSwitchFrom = uiState.page
+            pageSwitchAt = SystemClock.elapsedRealtime()
+        }
         uiState.page = target
         roundView.state = uiState
         if (changed) {
             sendCommand(kind = 0, page = target)
         }
     }
+
+    private var pageSwitchAt = 0L
+    private var pageSwitchFrom = -1
 
     /** 拉起 OPPO 内置音乐控制（系统级联动手机播放），优先官方蓝牙音乐动作。 */
     private fun launchSystemMusicController() {
@@ -335,7 +350,13 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
             else -> -1
         }
         if (localPage >= 0 && localPage != uiState.page) {
-            uiState.page = localPage
+            // 快照是 5Hz 的：本地乐观切换后 1.5s 内来自「切换前页面」的回显是旧状态，
+            // 忽略之，否则会概率性弹回旧页（用户反馈「切换没成功」的主因）。
+            val staleEcho = localPage == pageSwitchFrom &&
+                SystemClock.elapsedRealtime() - pageSwitchAt < 1500
+            if (!staleEcho) {
+                uiState.page = localPage
+            }
         }
         if (++snapLogCounter % 30 == 1) {
             Log.i(

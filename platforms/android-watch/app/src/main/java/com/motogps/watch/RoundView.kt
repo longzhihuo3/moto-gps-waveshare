@@ -173,6 +173,11 @@ class RoundView(context: Context) : View(context) {
     /** 向目标值缓动；返回是否仍需要继续画帧。 */
     private fun tickAnimation(s: NavSnapshotData, dt: Float): Boolean {
         var moving = false
+        // 规划页：路线描画循环（约 1.9s 一轮），驱动帧循环
+        if (s.state == 2) {
+            routeAnimT = (routeAnimT + dt / 1.9f) % 1f
+            moving = true
+        }
         // 速度：指数缓动（时间常数 ~100ms），并维护峰值/趋势
         val targetSpeed = s.speedDeciKph / 10f
         val alpha = 1f - exp(-dt * 10f)
@@ -375,14 +380,92 @@ class RoundView(context: Context) : View(context) {
             2 -> drawMusic(canvas, cx, cy, radius, s.media)
             else -> {
                 val snapshot = s.snapshot
-                if (snapshot == null || snapshot.state == 0 || snapshot.state == 1 || snapshot.state == 2) {
+                if (snapshot == null || snapshot.state == 0 || snapshot.state == 1) {
                     drawCentered(canvas, cx, cy, "准备出发", snapshot?.instruction?.takeIf { it.isNotEmpty() } ?: "")
+                } else if (snapshot.state == 2) {
+                    // 路线规划中：对齐原版 BUILDING ROUTE 页（路线描画动画）
+                    drawBuildingRoute(canvas, cx, cy, radius)
                 } else {
                     drawNavigation(canvas, cx, cy, radius, snapshot)
                 }
             }
         }
     }
+
+    // region 规划页（对齐原版 WAVESHARE 原型：白线沿路线图形循环描画）
+
+    private var routeAnimT = 0f
+
+    /** 装饰性路线图形（归一化坐标，x 右正 y 上正；首点=起点，末点=终点圆环）。 */
+    private val planningRoutePts = floatArrayOf(
+        -0.52f, 0.28f,
+        -0.20f, 0.52f,
+        -0.02f, 0.20f,
+        0.24f, 0.44f,
+        0.58f, 0.64f,
+    )
+
+    private fun drawBuildingRoute(canvas: Canvas, cx: Float, cy: Float, radius: Float) {
+        val gy = cy - radius * 0.22f
+        val sx = radius * 0.70f
+        val sy = radius * 0.48f
+        val n = planningRoutePts.size / 2
+        fun mx(i: Int) = cx + planningRoutePts[i * 2] * sx
+        fun my(i: Int) = gy - planningRoutePts[i * 2 + 1] * sy
+
+        // 段长与累计长度（部分描画用）
+        val segLen = FloatArray(n - 1)
+        val cum = FloatArray(n)
+        var total = 0f
+        for (i in 0 until n - 1) {
+            segLen[i] = kotlin.math.hypot(mx(i + 1) - mx(i), my(i + 1) - my(i))
+            cum[i + 1] = cum[i] + segLen[i]
+            total += segLen[i]
+        }
+
+        // 底层深灰描边（全长，视频同款阴影）
+        routeUnderPaint.strokeWidth = radius * 0.052f
+        scratchPath.reset()
+        for (i in 0 until n) {
+            if (i == 0) scratchPath.moveTo(mx(i), my(i)) else scratchPath.lineTo(mx(i), my(i))
+        }
+        canvas.drawPath(scratchPath, routeUnderPaint)
+
+        // 白线描画到进度 routeAnimT
+        val drawLen = total * routeAnimT
+        routePaint.strokeWidth = radius * 0.034f
+        scratchPath.reset()
+        scratchPath.moveTo(mx(0), my(0))
+        for (i in 0 until n - 1) {
+            if (drawLen >= cum[i + 1]) {
+                scratchPath.lineTo(mx(i + 1), my(i + 1))
+            } else {
+                val f = ((drawLen - cum[i]) / segLen[i]).coerceIn(0f, 1f)
+                scratchPath.lineTo(mx(i) + (mx(i + 1) - mx(i)) * f, my(i) + (my(i + 1) - my(i)) * f)
+                break
+            }
+        }
+        canvas.drawPath(scratchPath, routePaint)
+
+        // 途经点：白线到达后出现的小圆点
+        for (i in 1 until n - 1) {
+            if (drawLen >= cum[i]) canvas.drawCircle(mx(i), my(i), radius * 0.020f, carPaint)
+        }
+        // 起点：实心白点；终点：白圆环（始终显示）
+        canvas.drawCircle(mx(0), my(0), radius * 0.026f, carPaint)
+        iconPaint.strokeWidth = radius * 0.014f
+        canvas.drawCircle(mx(n - 1), my(n - 1), radius * 0.042f, iconPaint)
+
+        // 文案：顶部小标签 / 大标题 / 中文副标题
+        dialTextPaint.textSize = radius * 0.048f
+        canvas.drawText("M O T O   G P S   /   R O U T E", cx, cy - radius * 0.58f, dialTextPaint)
+        textPaint.textSize = radius * 0.125f
+        canvas.drawText("BUILDING ROUTE", cx, cy + radius * 0.34f, textPaint)
+        hintPaint.textSize = radius * 0.070f
+        canvas.drawText("正在规划路线", cx, cy + radius * 0.47f, hintPaint)
+    }
+
+    // endregion
 
     private fun drawCentered(canvas: Canvas, cx: Float, cy: Float, title: String, subtitle: String) {
         textPaint.textSize = this.width / 9f
