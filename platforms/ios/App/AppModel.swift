@@ -409,6 +409,9 @@ final class AppModel: ObservableObject {
         routePreviewFailure = nil
         navigationFailure = nil
         isPlanningRoutePreview = true
+        // Watch shows the BUILDING ROUTE page while we plan (the navigation
+        // runtime does not exist yet, so nothing else publishes snapshots).
+        bluetooth.sendRoutePlanningPulse()
 
         if searchLocationStatus == .permissionDenied {
             failRoutePreview("需要当前位置才能规划路线，请在系统设置中允许定位")
@@ -506,6 +509,8 @@ final class AppModel: ObservableObject {
         routePreviewOrigin = nil
         isPlanningRoutePreview = false
         routePreviewFailure = message
+        // Revert the watch from BUILDING ROUTE to the idle page.
+        bluetooth.sendRoutePlanningIdlePulse()
     }
 
     private func clearRoutePreviewState() {
@@ -517,6 +522,11 @@ final class AppModel: ObservableObject {
         routePreviewOrigin = nil
         isPlanningRoutePreview = false
         routePreviewFailure = nil
+        // Only revert the watch if no navigation session is taking over the
+        // snapshot stream; otherwise the runtime's real snapshots win.
+        if !isNavigationActive {
+            bluetooth.sendRoutePlanningIdlePulse()
+        }
     }
 
     private func schedulePlaceSearch(query: String, delay: Duration) {

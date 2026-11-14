@@ -311,6 +311,36 @@ final class ESP32BLECentral: NSObject {
         scheduleNavigationTransmit()
     }
 
+    /// One-shot synthetic navigation snapshot published while the phone plans
+    /// a route preview.  The NavCore runtime that normally drives snapshots
+    /// only exists after the rider taps start, so without this the watch keeps
+    /// showing the idle page for the whole planning phase (log evidence: the
+    /// first real snapshot already reports state=navigating with a full route).
+    func sendRoutePlanningPulse() {
+        sendSyntheticNavigationSnapshot(stateName: "planning", routeRequestInFlight: true)
+    }
+
+    /// Synthetic idle snapshot so the watch leaves the BUILDING ROUTE page
+    /// when a route preview fails or the destination is cleared.
+    func sendRoutePlanningIdlePulse() {
+        sendSyntheticNavigationSnapshot(stateName: "idle", routeRequestInFlight: false)
+    }
+
+    private func sendSyntheticNavigationSnapshot(stateName: String, routeRequestInFlight: Bool) {
+        guard protocolReady, let codec else { return }
+        let input = MotoBLENavigationSnapshotInput()
+        input.stateName = stateName
+        input.networkName = "none"
+        input.displayPageName = "navigation"
+        input.hasDestination = routeRequestInFlight
+        input.routeRequestInFlight = routeRequestInFlight
+        do {
+            try send(codec.encodeNavigationSnapshot(input))
+        } catch {
+            recoverFromTransportError(error.localizedDescription)
+        }
+    }
+
     /// Retains the newest Apple Music projection while disconnected and sends
     /// it as soon as the encrypted v1 session becomes ready.
     func sendMediaState(_ state: PhoneMediaState) {
