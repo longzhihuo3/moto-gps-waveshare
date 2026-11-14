@@ -23,12 +23,15 @@ import androidx.core.content.ContextCompat
  * 手表端入口：全屏、亮屏常驻、启动 BLE 外设端。
  * 打开 App 即广播，iPhone MOTO GPS App 会自动扫描并连接（类 CarPlay 体验）。
  */
-class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
+class MainActivity : AppCompatActivity(), BlePeripheral.Listener, WifiLinkServer.Listener {
 
     private lateinit var roundView: RoundView
     private var ble: BlePeripheral? = null
+    private var wifiLink: WifiLinkServer? = null
     private val uiState = NavUiState()
     private var nextCommandId = 0
+    private var bleCentralConnected = false
+    private var bleProtocolReady = false
 
     // 横向拖拽翻页状态（跟手滑动）
     private var dragging = false
@@ -217,6 +220,8 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
         headingFusion.stop()
         ble?.stop()
         ble = null
+        wifiLink?.stop()
+        wifiLink = null
         super.onDestroy()
     }
 
@@ -263,6 +268,10 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
         ble = peripheral
         uiState.advertising = true
         roundView.state = uiState
+        // Wi-Fi 热点直传（方案 1）：iPhone 热点下同网段，TCP 收高频快照/完整路线
+        if (wifiLink == null) {
+            wifiLink = WifiLinkServer(this) { runOnUiThread(it) }.also { it.start() }
+        }
     }
 
     private fun sendCommand(kind: Int, page: Int) {
@@ -313,14 +322,81 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
         }
     }
 
+    // region WifiLinkServer.Listener（主线程回调）
+
+    private var wifiLinkActive = false
+
+    override fun onWifiLinkChanged(active: Boolean) {
+        wifiLinkActive = active
+        Log.i("MotoUI", "wifi link ${if (active) "up" else "down"}")
+        // Wi-Fi 链路同样视作「手机已连」：iPhone 热点场景下可以完全不走 BLE 显示
+        uiState.centralConnected = bleCentralConnected || active
+        uiState.protocolReady = bleProtocolReady || active
+        if (!active) {
+            // Wi-Fi 断开：清掉 Wi-Fi 专属数据（BLE 通道不受影响）
+            roundView.setDetailedRoute(null)
+            uiState.wifiLink = false
+        } else {
+            uiState.wifiLink = true
+        }
+        roundView.state = uiState
+    }
+
+    override fun onWifiSnapshot(snapshot: NavSnapshotData) {
+        handleSnapshot(snapshot)
+    }
+
+    override fun onWifiRoute(pointsE6: IntArray, routeToken: Long) {
+        roundView.setDetailedRoute(normalizeRoute(pointsE6))
+        Log.i("MotoUI", "wifi route: ${pointsE6.size / 2} pts token=$routeToken")
+    }
+
+    /** 绝对 E6 折线 → 归一化坐标（[-1..1]，x 右正 y 上正，等比缩放，>240 点抽稀）。 */
+    private fun normalizeRoute(pointsE6: IntArray): FloatArray {
+        val n = pointsE6.size / 2
+        if (n < 2) return FloatArray(0)
+        val step = ((n + 239) / 240).coerceAtLeast(1)
+        var latMin = Int.MAX_VALUE; var latMax = Int.MIN_VALUE
+        var lonMin = Int.MAX_VALUE; var lonMax = Int.MIN_VALUE
+        for (i in 0 until n) {
+            val lat = pointsE6[i * 2]; val lon = pointsE6[i * 2 + 1]
+            if (lat < latMin) latMin = lat; if (lat > latMax) latMax = lat
+            if (lon < lonMin) lonMin = lon; if (lon > lonMax) lonMax = lon
+        }
+        val latC = (latMin + latMax) / 2.0
+        val lonC = (lonMin + lonMax) / 2.0
+        val dLat = (latMax - latMin).coerceAtLeast(1)
+        val dLon = (lonMax - lonMin).coerceAtLeast(1)
+        // 经度按纬度余弦近似压缩成等比
+        val lonScale = kotlin.math.cos(Math.toRadians(latC / 1e6))
+        val spanX = dLon * lonScale
+        val spanY = dLat
+        val k = 0.90 / maxOf(spanX, spanY.toDouble())
+        val count = (n + step - 1) / step
+        val out = FloatArray(count * 2)
+        var w = 0
+        var i = 0
+        while (i < n) {
+            out[w * 2] = ((pointsE6[i * 2 + 1] - lonC) * lonScale * k).toFloat()
+            out[w * 2 + 1] = ((pointsE6[i * 2] - latC) * k).toFloat()
+            w++
+            i += step
+        }
+        return out
+    }
+
+    // endregion
+
     // region BlePeripheral.Listener（主线程回调）
 
     override fun onCentralConnected(connected: Boolean) {
-        uiState.centralConnected = connected
+        bleCentralConnected = connected
+        uiState.centralConnected = connected || wifiLinkActive
         roundView.state = uiState
     }
 
     override fun onProtocolReady() {
+        bleProtocolReady = true
         uiState.protocolReady = true
         roundView.state = uiState
     }
@@ -336,10 +412,16 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
         uiState.snapshot = null
         uiState.route = null
         uiState.scene = null
+        roundView.setDetailedRoute(null)
         roundView.state = uiState
     }
 
     override fun onSnapshot(snapshot: NavSnapshotData) {
+        handleSnapshot(snapshot)
+    }
+
+    /** BLE 与 Wi-Fi 快照共用的处理链路（页面权威仍是手机端）。 */
+    private fun handleSnapshot(snapshot: NavSnapshotData) {
         uiState.snapshot = snapshot
         // 手机是页面权威：快照 display_page 同步本地页。
         // 协议页 0导航 1速度 2航向(已移除，忽略) 3音乐(本地 2)。
@@ -379,6 +461,7 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
 
     override fun onRouteInvalidated() {
         uiState.route = null
+        roundView.setDetailedRoute(null)
         roundView.state = uiState
     }
 

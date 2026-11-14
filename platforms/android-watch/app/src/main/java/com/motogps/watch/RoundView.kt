@@ -23,6 +23,7 @@ data class NavUiState(
     var centralConnected: Boolean = false,
     var protocolReady: Boolean = false,
     var linkActive: Boolean = true,
+    var wifiLink: Boolean = false,
     var page: Int = 0,
     var snapshot: NavSnapshotData? = null,
     var route: BlePeripheral.CommittedRoute? = null,
@@ -265,6 +266,7 @@ class RoundView(context: Context) : View(context) {
         style = Paint.Style.FILL
     }
     private val carPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+    private val wifiDotPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(76, 217, 100) }
     private val iconPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         style = Paint.Style.STROKE
@@ -402,6 +404,11 @@ class RoundView(context: Context) : View(context) {
         // 页点：滑动中以视觉页为准；过渡期间始终显示给出位置反馈
         val visualPage = if (swipeTargetPage >= 0 && swipeProgress > 0.5f) swipeTargetPage else state.page
         if (state.page != 0 || swipeTargetPage >= 0) drawPageDots(canvas, cx, cy, radius, visualPage)
+        // Wi-Fi 直传指示：绿点 = iPhone 热点通道已建立（右缘中部，避让顶部状态区）
+        if (state.wifiLink) {
+            wifiDotPaint.alpha = if (lifecycleT % 1.6f < 1.2f) 255 else 120
+            canvas.drawCircle(cx + radius * 0.80f, cy, radius * 0.022f, wifiDotPaint)
+        }
         canvas.restore()
     }
 
@@ -442,13 +449,23 @@ class RoundView(context: Context) : View(context) {
         0.58f, 0.64f,
     )
 
+    /** Wi-Fi 直传收到的真实路线（归一化坐标，同上约定）；空则用装饰图形。 */
+    private var detailedRoutePts: FloatArray? = null
+
+    /** 手机端经 Wi-Fi 推来的完整路线；传 null 恢复装饰图形。 */
+    fun setDetailedRoute(pts: FloatArray?) {
+        detailedRoutePts = if (pts != null && pts.size >= 4) pts else null
+        invalidate()
+    }
+
     private fun drawBuildingRoute(canvas: Canvas, cx: Float, cy: Float, radius: Float) {
         val gy = cy - radius * 0.22f
         val sx = radius * 0.70f
         val sy = radius * 0.48f
-        val n = planningRoutePts.size / 2
-        fun mx(i: Int) = cx + planningRoutePts[i * 2] * sx
-        fun my(i: Int) = gy - planningRoutePts[i * 2 + 1] * sy
+        val pts = detailedRoutePts ?: planningRoutePts
+        val n = pts.size / 2
+        fun mx(i: Int) = cx + pts[i * 2] * sx
+        fun my(i: Int) = gy - pts[i * 2 + 1] * sy
 
         // 段长与累计长度（部分描画用）
         val segLen = FloatArray(n - 1)
@@ -497,6 +514,8 @@ class RoundView(context: Context) : View(context) {
         dialTextPaint.textSize = radius * 0.048f
         canvas.drawText("M O T O   G P S   /   R O U T E", cx, cy - radius * 0.58f, dialTextPaint)
         textPaint.textSize = radius * 0.125f
+        // 速度页会把 textPaint 改成 LEFT，这里恢复居中（否则标题偏右被圆边裁剪）
+        textPaint.textAlign = Paint.Align.CENTER
         canvas.drawText("BUILDING ROUTE", cx, cy + radius * 0.34f, textPaint)
         hintPaint.textSize = radius * 0.070f
         canvas.drawText("正在规划路线", cx, cy + radius * 0.47f, hintPaint)

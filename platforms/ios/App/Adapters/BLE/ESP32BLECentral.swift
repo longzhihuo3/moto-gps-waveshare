@@ -309,6 +309,9 @@ final class ESP32BLECentral: NSObject {
     func sendNavigationSnapshot(_ state: MotoNavCoreSnapshot) {
         pendingNavigationState = state
         scheduleNavigationTransmit()
+        // Wi-Fi 热点直传（方案 1）：同一条快照走 TCP 加速车道，BLE 照常工作。
+        // 内部自带网段检测 + 去重限频，不在热点环境时是零开销空操作。
+        MotoWifiLink.shared.publish(state)
     }
 
     /// One-shot synthetic navigation snapshot published while the phone plans
@@ -327,6 +330,11 @@ final class ESP32BLECentral: NSObject {
     }
 
     private func sendSyntheticNavigationSnapshot(stateName: String, routeRequestInFlight: Bool) {
+        // Wi-Fi 侧不等 BLE 协议就绪：规划状态同样走加速车道（手表端防闪烁）
+        MotoWifiLink.shared.publishSynthetic(
+            stateName: stateName,
+            routeRequestInFlight: routeRequestInFlight
+        )
         guard protocolReady, let codec else { return }
         let input = MotoBLENavigationSnapshotInput()
         input.stateName = stateName
