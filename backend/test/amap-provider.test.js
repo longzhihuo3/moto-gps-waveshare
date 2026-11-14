@@ -51,6 +51,7 @@ test("retries bounded route transport failures before succeeding", async () => {
   const payload = await routeFixture();
   let calls = 0;
   const provider = createAmapProvider({
+    roadSpeedLimits: false,
     key: "test-only-placeholder",
     retryDelayMs: 0,
     fetchImpl: async () => {
@@ -72,6 +73,7 @@ test("exposes all AMap candidates for route preview", async () => {
   second.path_id = "fixture-beijing-preview-2";
   payload.route.paths.push(second);
   const provider = createAmapProvider({
+    roadSpeedLimits: false,
     key: "test-only-placeholder",
     fetchImpl: async () => jsonResponse(payload),
     clock: () => 1700000000123,
@@ -86,6 +88,7 @@ test("exposes all AMap candidates for route preview", async () => {
 test("stops retrying a persistently unavailable route service after three GETs", async () => {
   let calls = 0;
   const provider = createAmapProvider({
+    roadSpeedLimits: false,
     key: "test-only-placeholder",
     retryDelayMs: 0,
     fetchImpl: async () => {
@@ -107,6 +110,7 @@ test("retries transient route HTTP failures but not non-transient HTTP failures"
   await t.test("HTTP 503 is retried", async () => {
     let calls = 0;
     const provider = createAmapProvider({
+    roadSpeedLimits: false,
       key: "test-only-placeholder",
       retryDelayMs: 0,
       fetchImpl: async () => {
@@ -122,6 +126,7 @@ test("retries transient route HTTP failures but not non-transient HTTP failures"
   await t.test("HTTP 400 is returned immediately", async () => {
     let calls = 0;
     const provider = createAmapProvider({
+    roadSpeedLimits: false,
       key: "test-only-placeholder",
       retryDelayMs: 0,
       fetchImpl: async () => {
@@ -140,6 +145,7 @@ test("retries transient route HTTP failures but not non-transient HTTP failures"
   await t.test("HTTP 429 is surfaced without an immediate retry", async () => {
     let calls = 0;
     const provider = createAmapProvider({
+    roadSpeedLimits: false,
       key: "test-only-placeholder",
       retryDelayMs: 0,
       fetchImpl: async () => {
@@ -159,6 +165,7 @@ test("retries transient route HTTP failures but not non-transient HTTP failures"
 test("does not retry an AMap route business error returned over HTTP 200", async () => {
   let calls = 0;
   const provider = createAmapProvider({
+    roadSpeedLimits: false,
     key: "test-only-placeholder",
     retryDelayMs: 0,
     fetchImpl: async () => {

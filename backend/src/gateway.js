@@ -176,9 +176,9 @@ export function createGateway({
           capabilities: {
             route_planning: providerMode === "amap",
             route_traffic: providerMode === "amap",
-            // Route Planning v2 exposes neither legal road speed limits nor
-            // live signal phases. API readiness must not imply those feeds.
-            road_speed_limits: false,
+            // Road speed limits come from OSM maxspeed (best-effort) when the
+            // provider supports it; live signal phases remain unavailable.
+            road_speed_limits: provider.roadSpeedLimits === true,
             traffic_light_countdown: false,
             surrounding_map: typeof mapProvider?.getTile === "function",
             map_city_search: typeof provider.searchCities === "function",

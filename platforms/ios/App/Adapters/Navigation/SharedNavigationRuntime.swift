@@ -269,6 +269,7 @@ final class SharedNavigationRuntime {
         value.routeID = route.routeID
         value.totalDistanceM = route.totalDistanceM
         value.totalDurationS = UInt32(clamping: route.totalDurationS)
+        value.speedLimitKPH = UInt16(clamping: route.speedLimitKph ?? 0)
         value.generatedAtMs = route.generatedAtMs
         value.polyline = route.polyline.map { point in
             let result = MotoNavPointValue()

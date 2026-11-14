@@ -64,8 +64,12 @@ async function main() {
     if (typeof key !== "string" || key.trim() === "") {
       throw new Error("AMAP_WEB_SERVICE_KEY is required when MOTO_PROVIDER=amap");
     }
+    // MOTO_TRAVEL_MODE=riding 时强制走高德骑行路径规划（自行车/两轮），
+    // App 端无需改动，ETA 自动变为骑行时间（协议 v1 route_mode 只有 driving）。
+    const travelMode = process.env.MOTO_TRAVEL_MODE === "riding" ? "riding" : "driving";
+    console.log(`AMap travel mode: ${travelMode}`);
     provider = {
-      ...createAmapProvider({ key }),
+      ...createAmapProvider({ key, travelMode }),
       ...createAmapPlacesProvider({ key }),
       ...createAmapCitiesProvider({ key }),
     };
@@ -77,7 +81,8 @@ async function main() {
     throw new Error(`unsupported MOTO_PROVIDER: ${providerMode}`);
   }
   const port = Number(process.env.PORT ?? 8787);
-  const allowedOrigin = process.env.WEB_ORIGIN ?? "http://localhost:5173";
+  const host = process.env.HOST ?? "0.0.0.0";
+  const allowedOrigin = process.env.WEB_ORIGIN ?? "*";
   const mapProvider = createMapTileProvider({
     url: process.env.MOTO_MAP_PMTILES_URL ?? (providerMode === "amap" ? "auto" : "disabled"),
     cacheDirectory: process.env.MOTO_MAP_CACHE_DIR,
@@ -87,8 +92,8 @@ async function main() {
   await mapProvider?.initialize();
   const server = createGateway({ provider, mapProvider, allowedOrigin, providerMode });
 
-  server.listen(port, "127.0.0.1", () => {
-    console.log(`MOTO GPS gateway listening on http://127.0.0.1:${port} (${providerMode})`);
+  server.listen(port, host, () => {
+    console.log(`MOTO GPS gateway listening on http://${host}:${port} (${providerMode})`);
   });
 
   const close = () => { mapProvider?.close(); server.close(); };
