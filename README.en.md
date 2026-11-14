@@ -84,11 +84,29 @@ cd backend && npm install && npm start   # listens on :8787
 For the iPhone app, follow the upstream
 [iOS sideload guide](docs/IOS_SIDELOAD.md) (SideStore, free Apple ID, 7-day renewal),
 or let GitHub Actions (`ios-sideload.yml`) build an unsigned IPA automatically.
+
+### 2b. Android phone app (no iPhone needed)
+
+The upstream repo ships a native Android phone app (`platforms/android`, Kotlin + Compose):
+destination search, route preview, BLE connection to the display, lock-screen foreground
+navigation — sharing the same C++ nav core and protocol stack as iOS, with no Google Play
+services dependency:
+
+```bash
+cd platforms/android
+gradle assembleDebug   # JDK 17, Android SDK + NDK required (shared C++ via NDK)
+```
+
+> Upstream marks real-device pairing as still experimental; the combination with this
+> repo's watch app is experimental too — issues with your device model are welcome.
+
 Gateway configuration: [GATEWAY_SETUP.md](docs/GATEWAY_SETUP.md) (Amap key required).
 
 ## Differences from upstream
 
 - New `platforms/android-watch`: native OPPO Watch X app (the core of this repo);
+- Android phone app (`platforms/android`) verified to build in this fork and compatible
+  with the watch app's BLE peripheral;
 - iOS: pushes BUILDING ROUTE state as soon as route planning starts; allows LAN HTTP to
   the gateway; speed-limit passthrough;
 - Gateway: search LRU cache (10 min TTL), OSM speed-limit pipeline;
