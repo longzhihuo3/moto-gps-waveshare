@@ -8,6 +8,10 @@ const DEFAULT_TEXT_ENDPOINT = "https://restapi.amap.com/v5/place/text";
 const DEFAULT_AROUND_ENDPOINT = "https://restapi.amap.com/v5/place/around";
 const MAX_RESULTS = 12;
 const NEARBY_RADIUS_M = 50_000;
+// 搜索结果缓存：隧道链路单次请求 ≈1s+（TLS+边缘路由），重复关键词直接命中缓存秒回。
+// 键中坐标取整到 0.01°（≈1.1km 网格），GPS 微动不会击穿缓存。
+const SEARCH_CACHE_LIMIT = 128;
+const SEARCH_CACHE_TTL_MS = 10 * 60 * 1000;
 
 export class AmapPlacesError extends Error {
   constructor(code, message, { retryable = true } = {}) {
@@ -182,8 +186,40 @@ export function createAmapPlacesProvider({
     throw new TypeError("fetchImpl must be a function");
   }
 
+  const searchCache = new Map(); // key -> { expiresAtMs, result }
+
+  function cacheKeyFor(query) {
+    const origin = query?.origin;
+    const originKey =
+      origin && Number.isFinite(Number(origin.longitude_deg))
+        ? `${Number(origin.longitude_deg).toFixed(2)},${Number(origin.latitude_deg).toFixed(2)}`
+        : "-";
+    return `${compactText(query?.keywords, 80)}|${compactText(query?.region, 32)}|${originKey}`;
+  }
+
+  function cacheGet(key, nowMs) {
+    const hit = searchCache.get(key);
+    if (!hit) return null;
+    if (nowMs > hit.expiresAtMs) {
+      searchCache.delete(key);
+      return null;
+    }
+    return hit.result;
+  }
+
+  function cachePut(key, result, nowMs) {
+    if (searchCache.size >= SEARCH_CACHE_LIMIT) {
+      searchCache.delete(searchCache.keys().next().value); // FIFO 淘汰
+    }
+    searchCache.set(key, { expiresAtMs: nowMs + SEARCH_CACHE_TTL_MS, result });
+  }
+
   return {
     async searchPlaces(query, { signal } = {}) {
+      const cacheKey = cacheKeyFor(query);
+      const cached = cacheGet(cacheKey, Date.now());
+      if (cached) return cached;
+
       const deadlineSignal = AbortSignal.timeout(timeoutMs);
       const signals = [deadlineSignal];
       if (signal) signals.push(signal);
@@ -225,14 +261,19 @@ export function createAmapPlacesProvider({
       const nearbyUrl = buildAmapPlacesUrl(query, { key, endpoint, aroundEndpoint });
       const nearbyPayload = await fetchPayload(nearbyUrl);
       const nearbyResult = transformAmapPlaces(nearbyPayload, query);
-      if (!query?.origin || nearbyResult.places.length > 0) return nearbyResult;
-
-      // Around search is intentionally bounded to the rider's local area. If
-      // it finds nothing, retain normal navigation behaviour by falling back
-      // to the original nationwide/region-biased text search.
-      const textUrl = buildAmapPlacesUrl({ ...query, origin: undefined }, { key, endpoint });
-      const textPayload = await fetchPayload(textUrl);
-      return transformAmapPlaces(textPayload, query);
+      let result = nearbyResult;
+      if (!query?.origin || nearbyResult.places.length > 0) {
+        result = nearbyResult;
+      } else {
+        // Around search is intentionally bounded to the rider's local area. If
+        // it finds nothing, retain normal navigation behaviour by falling back
+        // to the original nationwide/region-biased text search.
+        const textUrl = buildAmapPlacesUrl({ ...query, origin: undefined }, { key, endpoint });
+        const textPayload = await fetchPayload(textUrl);
+        result = transformAmapPlaces(textPayload, query);
+      }
+      cachePut(cacheKey, result, Date.now());
+      return result;
     },
   };
 }

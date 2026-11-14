@@ -137,11 +137,15 @@ class RoundView(context: Context) : View(context) {
         }
         // 位置缓动：追踪 scene 原点（用户位置），抑制 GPS 抖动平移。
         // 低速（含静止）rate 3/s 几乎冻结（静止漂移不晃图），骑行 8/s 跟随。
+        // 位置缓动同样驱动帧循环（>0.5m 残差时），否则落格跳变。
         state.scene?.let { sc ->
             if (dispLatE6.isNaN()) {
                 dispLatE6 = sc.originLatE6.toDouble()
                 dispLonE6 = sc.originLonE6.toDouble()
             } else {
+                val dLatM = (sc.originLatE6 - dispLatE6) / 1e6 * 111_320.0
+                val dLonM = (sc.originLonE6 - dispLonE6) / 1e6 * bmpMPerDegLon
+                if (dLatM * dLatM + dLonM * dLonM > 0.25) moving = true
                 val pa = 1f - exp(-dt * (if (speedMps < 1f) 3f else 8f))
                 dispLatE6 += (sc.originLatE6 - dispLatE6) * pa
                 dispLonE6 += (sc.originLonE6 - dispLonE6) * pa
@@ -249,6 +253,10 @@ class RoundView(context: Context) : View(context) {
         textAlign = Paint.Align.CENTER
     }
 
+    // 距离文本缓存（快照 5Hz 更新，文本不随 60fps 动画帧变化）
+    private var cachedDistM = -1L
+    private var cachedDistText = ""
+
     override fun onDraw(canvas: Canvas) {
         val w = width.toFloat()
         val h = height.toFloat()
@@ -329,7 +337,7 @@ class RoundView(context: Context) : View(context) {
             (dispLat - bmpOriginLatE6) / 1e6 * 111_320.0,
             (dispLon - bmpOriginLonE6) / 1e6 * bmpMPerDegLon,
         )
-        if (mapBitmap != null && key == lastMapKey && mapBitmap!!.width == needSize && driftM < 45.0) return
+        if (mapBitmap != null && key == lastMapKey && mapBitmap!!.width == needSize && driftM < 55.0) return
 
         if (mapBitmap == null || mapBitmap!!.width != needSize) {
             mapBitmap = Bitmap.createBitmap(needSize, needSize, Bitmap.Config.ARGB_8888)
@@ -425,9 +433,13 @@ class RoundView(context: Context) : View(context) {
         // 4. 圆周进度弧（规范 3.2：无有效路线时隐藏空进度）
         if (snapshot.hasRouteView) drawProgressArc(canvas, cx, cy, radius, snapshot)
 
-        // 5. 底部安全区：转向图标 + 大号距离，水平组合居中（参照原版：元素大而少，一眼可读）
+        // 5. 底部安全区：转向图标 + 大号距离（文本按快照缓存，避免每帧分配字符串触发 GC 卡顿）
         val distance = snapshot.distanceToManeuverM
-        val distText = formatDistance(distance)
+        if (distance != cachedDistM) {
+            cachedDistM = distance
+            cachedDistText = formatDistance(distance)
+        }
+        val distText = cachedDistText
         textPaint.textSize = radius * 0.28f
         textPaint.textAlign = Paint.Align.LEFT
         val textW = textPaint.measureText(distText)

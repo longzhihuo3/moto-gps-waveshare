@@ -117,8 +117,10 @@ class HeadingFusion(context: Context) : SensorEventListener {
                 val now = event.timestamp
                 val dt = if (lastGyroNs == 0L) 0f
                 else ((now - lastGyroNs) / 1e9f).coerceIn(0.001f, 0.5f)
-                // 绕世界垂直轴的角速度 = gyro · up(设备系)，up = R 第 3 行
-                val rateDeg = Math.toDegrees(
+                // 方位角变化率：陀螺仪遵守右手定则（顺时针转表 gz 为负），而罗盘
+                // 方位角顺时针增大 → 取负号。漏掉这一步会让地图旋转方向整体反向。
+                // 绕世界垂直轴的角速度 = gyro · up(设备系)，up = R 第 3 行。
+                val rateDeg = -Math.toDegrees(
                     (event.values[0] * r[6] + event.values[1] * r[7] + event.values[2] * r[8]).toDouble(),
                 ).toFloat()
                 yawRateDeg = if (yawRateDeg.isNaN()) rateDeg
