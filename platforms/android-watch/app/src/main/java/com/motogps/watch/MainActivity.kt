@@ -87,7 +87,12 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
                     val dx = e2.x - (e1?.x ?: e2.x)
                     val dy = e2.y - (e1?.y ?: e2.y)
                     Log.d("MotoUI", "fling dx=$dx dy=$dy vx=$velocityX vy=$velocityY page=${uiState.page}")
-                    if (abs(dx) > abs(dy) && abs(dx) > 60) return true // 横向滑动统一走拖拽翻页
+                    if (abs(dx) > abs(dy) && abs(dx) > 60) {
+                        // 音乐页不入本地滑动循环：速度页左滑直接拉起系统音乐控制（不切本地页），
+                        // 避免过渡动画先闪出自绘音乐页（用户反馈「多了一页非系统音乐页」）。
+                        if (dx < 0 && uiState.page == 1) launchSystemMusicController()
+                        return true
+                    }
                     val kind = when {
                         dy < 0 -> 5  // SwipeUp
                         else -> 6    // SwipeDown
@@ -114,10 +119,11 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
                     val dx = event.x - downX
                     val dy = event.y - downY
                     if (!dragging && abs(dx) > touchSlop && abs(dx) > abs(dy) * 1.3f) {
-                        // 本地三页循环：0导航 1速度 2音乐；左滑下一页（方向与系统一致）
+                        // 本地滑动循环仅 0导航↔1速度；2 音乐只由手机快照驱动显示，
+                        // 不参与拖拽过渡（滑向音乐直接拉起系统音乐控制，见 onFling）
                         val from = uiState.page
                         val target = from + if (dx < 0) 1 else -1
-                        if (target in 0..2) {
+                        if (target in 0..1) {
                             dragging = true
                             swipeTarget = target
                             roundView.beginPageSwipe(from, target)
@@ -264,8 +270,7 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
     }
 
     /**
-     * 滑动过渡结束后的页面提交（本地页：0导航 1速度 2音乐）。
-     * 滑到音乐页时同时拉起 OPPO 内置音乐控制（系统级联动，用户反馈体验好）。
+     * 滑动过渡结束后的页面提交（本地页：0导航 1速度；音乐页不进入拖拽循环）。
      */
     private fun commitPage(target: Int) {
         val changed = target != uiState.page
@@ -273,7 +278,6 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
         roundView.state = uiState
         if (changed) {
             sendCommand(kind = 0, page = target)
-            if (target == 2) launchSystemMusicController()
         }
     }
 
