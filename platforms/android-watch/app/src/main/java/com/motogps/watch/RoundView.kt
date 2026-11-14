@@ -123,24 +123,17 @@ class RoundView(context: Context) : View(context) {
         }
         if (dispHeading.isNaN()) {
             dispHeading = targetHeading
-        } else if (gpsHeadingMode || compassH.isNaN()) {
-            // GPS 航向源：course 稳定，直接快跟（角速度上限 240°/s）
+        } else {
+            // 回退到用户实测「改进很大」版本的缓动参数（2026-11-14）：
+            // 死区 0.2°；GPS 源 240°/s（正常骑行转弯 ≈90°/s），罗盘源 300°/s 防跳变；
+            // 自适应缓动（高德/百度同款手感）：小误差慢跟压噪声，大误差快跟保灵敏。
             var diff = ((targetHeading - dispHeading + 540f) % 360f) - 180f
             if (abs(diff) > 0.2f) moving = true
-            val maxStep = 240f * dt
+            val maxStep = (if (gpsHeadingMode) 240f else 300f) * dt
             if (abs(diff) > maxStep) diff = kotlin.math.sign(diff) * maxStep
-            dispHeading = (dispHeading + diff * (1f - exp(-dt * 20f)) + 360f) % 360f
-        } else {
-            // 罗盘源（静止/低速）：HeadingFusion 已做互补滤波（陀螺仪积分主导、
-            // 磁力计慢速校准），输出航向只按手腕真实转速变化，此处轻缓动即可。
-            var diff = ((targetHeading - dispHeading + 540f) % 360f) - 180f
-            if (abs(diff) > 3f) {
-                moving = true
-                val maxStep = 150f * dt
-                if (abs(diff) > maxStep) diff = kotlin.math.sign(diff) * maxStep
-                val easeRate = 4f + 10f * (abs(diff) / 25f).coerceIn(0f, 1f)
-                dispHeading = (dispHeading + diff * (1f - exp(-dt * easeRate)) + 360f) % 360f
-            }
+            val easeRate = if (gpsHeadingMode) 20f
+            else 4f + 14f * (abs(diff) / 25f).coerceIn(0f, 1f)
+            dispHeading = (dispHeading + diff * (1f - exp(-dt * easeRate)) + 360f) % 360f
         }
         // 位置缓动：追踪 scene 原点（用户位置），抑制 GPS 抖动平移。
         // 低速（含静止）rate 3/s 几乎冻结（静止漂移不晃图），骑行 8/s 跟随。

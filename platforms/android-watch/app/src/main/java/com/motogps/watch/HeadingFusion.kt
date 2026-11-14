@@ -9,26 +9,25 @@ import kotlin.math.abs
 import kotlin.math.atan2
 import kotlin.math.cos
 import kotlin.math.exp
-import kotlin.math.min
 import kotlin.math.sin
 
 /**
- * 手表航向融合（互补滤波：陀螺仪主导 + 磁力计校准）。
+ * 手表航向融合（回退版：对齐 2026-11-14 用户实测「改进很大」版本的手感）。
  *
- * 实测教训（2026-11-14）：室内磁力计方位角会 ±100° 级跳变（磁干扰），直接驱动
- * 地图则「微动大转」，限速跟随则「锁住慢爬」。根治方案是高德/系统指南针同款架构：
- *
- *  1. **陀螺仪积分主导**：每帧把绕世界垂直轴的实测角速度（gyro · up）积分进航向——
- *     这是手腕的「真实」旋转，完全免疫磁噪声，地图跟手 1:1、停手即停；
- *  2. **磁力计只做慢速校准**：偏差 <45° 时按 0.6/s 缓拉对齐真北（同时消除陀螺零偏
- *     漂移）；偏差 ≥45° 视为磁干扰跳变，拒收大步修正、仅以 2°/s 缓拉防发散；
- *  3. 口径自适应：azimuth 参考「更接近水平的轴」（12 点方向 Y 优先），带迟滞防跳变。
- *
- * 输出 headingDeg 供地图旋转使用；主线程回调。
+ * 对齐高德/百度/系统指南针手感的三个要点：
+ *  1. **优先用 TYPE_ROTATION_VECTOR（陀螺仪融合）**——系统指南针同款数据源，
+ *     陀螺仪预积分输出，比裸加速度计+磁力计顺滑得多且无延迟；不可用才退回
+ *     getRotationMatrix(gravity, magnetic) 倾角补偿；
+ *  2. **时间常数低通滤波**（加速度计 12/s、磁力计 8/s、输出矢量 10~15/s，
+ *     sin/cos 分量滤波防 0/360 跳变）——残余高频噪声不滤则地图抖动；
+ *  3. **口径按参考轴质量自适应**（非 pitch 硬分！）：azimuth 由"指向近似水平的
+ *     参考轴"的水平投影决定——裸矩阵口径参考 12 点方向（Y 轴），竖屏重映射口径
+ *     参考表盘法线（Z 轴）。表盘朝上时 Y 轴水平、Z 轴指向天顶，此时若错误地用
+ *     重映射口径，azimuth 退化、噪声被极度放大 → 微动就大幅疯转、停手还转个不停。
  */
 class HeadingFusion(context: Context) : SensorEventListener {
 
-    /** 融合航向 0..360（NaN=尚未初始化）。 */
+    /** 磁北方位角 0..360（NaN=传感器不可用）。 */
     @Volatile
     var headingDeg: Float = Float.NaN
         private set
@@ -37,8 +36,8 @@ class HeadingFusion(context: Context) : SensorEventListener {
     var onChange: (() -> Unit)? = null
 
     private val sm = context.getSystemService(Context.SENSOR_SERVICE) as SensorManager
+    // 陀螺仪融合旋转矢量（系统指南针/高德同款）：优先，预积分平滑无延迟
     private val rotVec: Sensor? = sm.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR)
-    private val gyro: Sensor? = sm.getDefaultSensor(Sensor.TYPE_GYROSCOPE)
     private val accel: Sensor? = sm.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
     private val mag: Sensor? = sm.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD)
 
@@ -46,7 +45,6 @@ class HeadingFusion(context: Context) : SensorEventListener {
 
     fun start() {
         resetFilter()
-        gyro?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
         if (rotVec != null) {
             sm.registerListener(this, rotVec, SensorManager.SENSOR_DELAY_GAME)
         } else {
@@ -65,28 +63,30 @@ class HeadingFusion(context: Context) : SensorEventListener {
     private var haveMag = false
     private var lastAccelNs = 0L
     private var lastMagNs = 0L
-    private var lastGyroNs = 0L
-    private var lastFusedNs = 0L
     private val r = FloatArray(9)
     private val rScreen = FloatArray(9)
     private val orient = FloatArray(3)
-    private var haveRotation = false
 
-    /** 陀螺仪绕垂直轴的低通角速度（°/s，NaN=不可用），也用于航向积分。 */
-    private var yawRateDeg: Float = Float.NaN
-
-    /** 口径迟滞：false=裸矩阵口径（参考 12 点方向 Y 轴），true=重映射口径（参考表盘法线 Z 轴）。 */
+    // 口径自适应迟滞：azimuth 质量取决于参考轴的水平投影分量。
+    //   裸矩阵口径参考 Y 轴（12 点方向），其竖直分量 = |R[7]|；
+    //   重映射口径参考 Z 轴（表盘法线），其竖直分量 = |R[8]|。
+    // 选竖直分量更小（水平投影更好）的口径；质量差超过 0.15 才切换，防反复跳变。
+    // 戴腕骑行时 12 点沿手臂近似水平 → 稳定用裸矩阵，任意手腕翻转都平滑衔接。
     private var useWrist = false
+
+    // 输出矢量低通（sin/cos 分量滤波，防 0°/360° 边界跳变）
+    private var filtSin = Float.NaN
+    private var filtCos = Float.NaN
+    private var lastOutNs = 0L
 
     private fun resetFilter() {
         haveAccel = false
         haveMag = false
+        filtSin = Float.NaN
+        filtCos = Float.NaN
         lastAccelNs = 0L
         lastMagNs = 0L
-        lastGyroNs = 0L
-        lastFusedNs = 0L
-        haveRotation = false
-        yawRateDeg = Float.NaN
+        lastOutNs = 0L
         headingDeg = Float.NaN
     }
 
@@ -98,36 +98,19 @@ class HeadingFusion(context: Context) : SensorEventListener {
 
     override fun onSensorChanged(event: SensorEvent) {
         when (event.sensor.type) {
-            Sensor.TYPE_GYROSCOPE -> {
-                // 绕世界垂直轴的角速度 = gyro · up(设备系)。R 为 device→world，
-                // up 在设备系 = R 第 3 行 = (R[6],R[7],R[8])。表盘朝上时 ≈ (0,0,1)。
-                if (!haveRotation) return
-                val dt = if (lastGyroNs == 0L) 0f
-                else ((event.timestamp - lastGyroNs) / 1e9f).coerceIn(0.001f, 0.5f)
-                val rateDeg = Math.toDegrees(
-                    (event.values[0] * r[6] + event.values[1] * r[7] + event.values[2] * r[8]).toDouble(),
-                ).toFloat()
-                yawRateDeg = if (yawRateDeg.isNaN()) rateDeg
-                else yawRateDeg + (rateDeg - yawRateDeg) * (1f - exp(-dt * 20f))
-                // 航向积分（陀螺仪主导）：地图旋转的唯一瞬时来源
-                if (!headingDeg.isNaN() && dt > 0f) {
-                    headingDeg = (headingDeg + yawRateDeg * dt + 360f) % 360f
-                }
-                lastGyroNs = event.timestamp
-            }
             Sensor.TYPE_ROTATION_VECTOR -> {
                 SensorManager.getRotationMatrixFromVector(r, event.values)
-                haveRotation = true
-                processOrientation(event.timestamp)
+                processOrientation(event.timestamp, outRate = 15f) // 已陀螺仪预积分，轻滤即可
             }
             Sensor.TYPE_ACCELEROMETER -> {
                 if (haveAccel) lowPass(accelVals, event.values, event.timestamp - lastAccelNs, 12f)
                 else for (i in 0..2) accelVals[i] = event.values[i]
                 lastAccelNs = event.timestamp
                 haveAccel = true
-                if (haveAccel && haveMag && SensorManager.getRotationMatrix(r, null, accelVals, magVals)) {
-                    haveRotation = true
-                    processOrientation(event.timestamp)
+                if (haveAccel && haveMag) {
+                    if (SensorManager.getRotationMatrix(r, null, accelVals, magVals)) {
+                        processOrientation(event.timestamp, outRate = 10f)
+                    }
                 }
             }
             Sensor.TYPE_MAGNETIC_FIELD -> {
@@ -135,26 +118,29 @@ class HeadingFusion(context: Context) : SensorEventListener {
                 else for (i in 0..2) magVals[i] = event.values[i]
                 lastMagNs = event.timestamp
                 haveMag = true
-                if (haveAccel && haveMag && SensorManager.getRotationMatrix(r, null, accelVals, magVals)) {
-                    haveRotation = true
-                    processOrientation(event.timestamp)
+                if (haveAccel && haveMag) {
+                    if (SensorManager.getRotationMatrix(r, null, accelVals, magVals)) {
+                        processOrientation(event.timestamp, outRate = 10f)
+                    }
                 }
             }
             else -> return
         }
     }
 
-    /** 磁力计侧校准：由旋转矩阵 r 提取磁方位角，慢速校准融合航向。 */
-    private fun processOrientation(nowNs: Long) {
+    /** 从当前旋转矩阵 r 提取航向：口径自适应 + 输出矢量低通 + 回调。 */
+    private fun processOrientation(nowNs: Long, outRate: Float) {
         SensorManager.getOrientation(r, orient)
-        val yVert = abs(r[7])   // 12 点方向（Y 轴）的竖直分量
-        val zVert = abs(r[8])   // 表盘法线（Z 轴）的竖直分量
+        val yVert = abs(r[7])
+        val zVert = abs(r[8])
         if (useWrist) {
             if (yVert + 0.15f < zVert) useWrist = false
         } else {
             if (zVert + 0.15f < yVert) useWrist = true
         }
+
         val azim = if (useWrist) {
+            // 仅当 12 点方向接近竖直（如手臂下垂）而表盘法线朝水平时才换参考轴
             SensorManager.remapCoordinateSystem(r, SensorManager.AXIS_X, SensorManager.AXIS_Z, rScreen)
             SensorManager.getOrientation(rScreen, orient)
             orient[0]
@@ -162,28 +148,27 @@ class HeadingFusion(context: Context) : SensorEventListener {
             orient[0]
         }
 
-        var magDeg = Math.toDegrees(azim.toDouble()).toFloat()
-        if (magDeg < 0f) magDeg += 360f
-
-        if (headingDeg.isNaN()) {
-            headingDeg = magDeg
-            lastFusedNs = nowNs
-            onChange?.invoke()
-            return
+        // 输出矢量低通（rate 10~15/s，与系统指南针手感相当）
+        val s = sin(azim)
+        val c = cos(azim)
+        if (filtSin.isNaN()) {
+            filtSin = s
+            filtCos = c
+        } else {
+            val dt = ((nowNs - lastOutNs) / 1e9f).coerceIn(0.001f, 0.5f)
+            val a = 1f - exp(-dt * outRate)
+            filtSin += (s - filtSin) * a
+            filtCos += (c - filtCos) * a
         }
+        lastOutNs = nowNs
 
-        val dt = ((nowNs - lastFusedNs) / 1e9f).coerceIn(0.001f, 0.5f)
-        lastFusedNs = nowNs
-        val err = ((magDeg - headingDeg + 540f) % 360f) - 180f
-        // 小偏差（<45°，可信）：0.6/s 缓拉对齐真北并消除陀螺零偏；
-        // 大偏差（≥45°，磁干扰跳变）：拒收大步修正，仅 2°/s 缓拉防漂移发散。
-        val pull = if (abs(err) < 45f) err * (1f - exp(-dt * 0.6f))
-        else kotlin.math.sign(err) * min(abs(err), 2f * dt)
-        headingDeg = (headingDeg + pull + 360f) % 360f
+        var deg = Math.toDegrees(atan2(filtSin.toDouble(), filtCos.toDouble())).toFloat()
+        if (deg < 0f) deg += 360f
+        headingDeg = deg
         onChange?.invoke()
     }
 
     override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) {
-        // 磁力计精度事件静默处理：融合层已通过偏差门限天然抗干扰。
+        // 精度事件由滤波层消化，无需处理。
     }
 }
