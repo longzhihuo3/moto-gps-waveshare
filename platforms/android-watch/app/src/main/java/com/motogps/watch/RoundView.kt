@@ -86,9 +86,15 @@ class RoundView(context: Context) : View(context) {
             // 页面滑动过渡独立于快照驱动（无快照时也能动画）
             val swipeStill = tickSwipe(dt)
             val stillMoving = swipeStill || (state.snapshot?.let { tickAnimation(it, dt) } ?: false)
+            // 生命周期页（连接/空闲）持续呼吸动画；无其它动画时限帧 ~30fps 省电
+            lifecycleT += dt
             if (stillMoving) {
                 invalidate()
                 choreographer.postFrameCallback(this)
+            } else if (isLifecycleScreen()) {
+                invalidate()
+                postDelayed({ startAnim() }, 32)
+                animating = false
             } else {
                 animating = false
             }
@@ -265,6 +271,23 @@ class RoundView(context: Context) : View(context) {
         strokeCap = Paint.Cap.ROUND
         strokeJoin = Paint.Join.ROUND
     }
+    // 生命周期页（连接/空闲）画笔
+    private val outlinePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = 0xFFD8D8D8.toInt()
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val scanPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+    }
+    private val circlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF34C368.toInt() }
+    private val checkPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.WHITE
+        style = Paint.Style.STROKE
+        strokeCap = Paint.Cap.ROUND
+        strokeJoin = Paint.Join.ROUND
+    }
     private val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textAlign = Paint.Align.CENTER
@@ -341,36 +364,48 @@ class RoundView(context: Context) : View(context) {
         clipPath.addCircle(cx, cy, clipR, Path.Direction.CW)
         canvas.clipPath(clipPath)
 
+        updateLifecycleClock()
         val s = state
-        when {
-            !s.centralConnected && s.advertising -> drawCentered(
-                canvas, cx, cy, "MOTO GPS", "等待手机连接…",
-            )
-            !s.protocolReady -> drawCentered(canvas, cx, cy, "已连接", "等待手机确认…")
-            !s.linkActive -> drawCentered(canvas, cx, cy, "信号丢失", "请确认手机 MOTO GPS App 在前台")
-            else -> {
-                if (swipeTargetPage >= 0) {
-                    // 双页滑动过渡：两页并排横移（dir=+1 内容左移翻下一页）
-                    val dir = swipeTargetPage - swipeFromPage
-                    val w = width.toFloat()
-                    canvas.save()
-                    canvas.translate(-dir * swipeProgress * w, 0f)
-                    drawPage(canvas, cx, cy, radius, swipeFromPage)
-                    canvas.restore()
-                    canvas.save()
-                    canvas.translate(dir * (1f - swipeProgress) * w, 0f)
-                    drawPage(canvas, cx, cy, radius, swipeTargetPage)
-                    canvas.restore()
-                } else {
-                    drawPage(canvas, cx, cy, radius, state.page)
-                }
-                // 页点：滑动中以视觉页为准；过渡期间始终显示给出位置反馈
-                val visualPage = if (swipeTargetPage >= 0 && swipeProgress > 0.5f) swipeTargetPage else state.page
-                if (state.page != 0 || swipeTargetPage >= 0) drawPageDots(canvas, cx, cy, radius, visualPage)
+        val lifecycle = when {
+            !s.centralConnected && s.advertising -> {
+                drawConnectScreen(canvas, cx, cy, radius, "CONNECT PHONE", "请打开手机应用", fast = false, alert = false); true
             }
+            !s.protocolReady -> {
+                drawConnectScreen(canvas, cx, cy, radius, "CONNECTING", "正在建立连接", fast = true, alert = false); true
+            }
+            uptimeMillis() - protocolReadyAt < 920L -> {
+                // 离线→在线边沿：绿勾轻呼吸 920ms 后自动进入下一状态（原版同款）
+                drawConnectedScreen(canvas, cx, cy, radius); true
+            }
+            !s.linkActive -> {
+                drawConnectScreen(canvas, cx, cy, radius, "SIGNAL LOST", "请确认手机 MOTO GPS App 在前台", fast = false, alert = true); true
+            }
+            else -> false
         }
+        if (lifecycle) {
+            startAnim()
+        } else if (swipeTargetPage >= 0) {
+            // 双页滑动过渡：两页并排横移（dir=+1 内容左移翻下一页）
+            val dir = swipeTargetPage - swipeFromPage
+            val w = width.toFloat()
+            canvas.save()
+            canvas.translate(-dir * swipeProgress * w, 0f)
+            drawPage(canvas, cx, cy, radius, swipeFromPage)
+            canvas.restore()
+            canvas.save()
+            canvas.translate(dir * (1f - swipeProgress) * w, 0f)
+            drawPage(canvas, cx, cy, radius, swipeTargetPage)
+            canvas.restore()
+        } else {
+            drawPage(canvas, cx, cy, radius, state.page)
+        }
+        // 页点：滑动中以视觉页为准；过渡期间始终显示给出位置反馈
+        val visualPage = if (swipeTargetPage >= 0 && swipeProgress > 0.5f) swipeTargetPage else state.page
+        if (state.page != 0 || swipeTargetPage >= 0) drawPageDots(canvas, cx, cy, radius, visualPage)
         canvas.restore()
     }
+
+    private fun uptimeMillis() = android.os.SystemClock.uptimeMillis()
 
     /** 绘制单页内容（本地页：0导航 1速度 2音乐）。 */
     private fun drawPage(canvas: Canvas, cx: Float, cy: Float, radius: Float, page: Int) {
@@ -381,7 +416,7 @@ class RoundView(context: Context) : View(context) {
             else -> {
                 val snapshot = s.snapshot
                 if (snapshot == null || snapshot.state == 0) {
-                    drawCentered(canvas, cx, cy, "准备出发", snapshot?.instruction?.takeIf { it.isNotEmpty() } ?: "")
+                    drawReadyToRide(canvas, cx, cy, radius)
                 } else if (snapshot.state == 1 || snapshot.state == 2 || snapshot.routeRequestInFlight) {
                     // 已在出路线流程（等待定位/规划中/请求在途）：原版 BUILDING ROUTE 页。
                     // 「等待定位」也算——会话开始后骑手视角就是在规划路线，
@@ -469,14 +504,139 @@ class RoundView(context: Context) : View(context) {
 
     // endregion
 
-    private fun drawCentered(canvas: Canvas, cx: Float, cy: Float, title: String, subtitle: String) {
-        textPaint.textSize = this.width / 9f
-        canvas.drawText(title, cx, cy - if (subtitle.isEmpty()) 0f else this.width / 40f, textPaint)
-        if (subtitle.isNotEmpty()) {
-            hintPaint.textSize = this.width / 22f
-            canvas.drawText(subtitle.take(18), cx, cy + this.width / 14f, hintPaint)
-        }
+    // region 连接生命周期页（对齐原版 LVGL 遮罩规格：手机轮廓扫描 / 绿勾呼吸 / 路线起终点呼吸）
+
+    /** 生命周期动画时钟（秒）。 */
+    private var lifecycleT = 0f
+
+    /** 当前是否停在需要持续动画的生命周期页（连接流程或空闲页）。 */
+    private fun isLifecycleScreen(): Boolean {
+        val s = state
+        if (!s.centralConnected && s.advertising) return true
+        if (!s.protocolReady) return true
+        if (!s.linkActive) return true
+        if (uptimeMillis() - protocolReadyAt < 920L) return true
+        val snap = s.snapshot
+        return s.page == 0 && (snap == null || snap.state == 0)
     }
+
+    /** protocolReady 由 false→true 的时刻（uptime ms），用于 920ms 绿勾过渡。 */
+    private var protocolReadyAt = -1L
+    private var prevProtocolReady = false
+
+    private fun updateLifecycleClock() {
+        val ready = state.protocolReady
+        if (ready && !prevProtocolReady) protocolReadyAt = uptimeMillis()
+        prevProtocolReady = ready
+    }
+
+    /** 顶部品牌小标（各生命周期页共用）。 */
+    private fun drawBrandLabel(canvas: Canvas, cx: Float, cy: Float, radius: Float) {
+        dialTextPaint.textSize = radius * 0.048f
+        canvas.drawText("M O T O   G P S", cx, cy - radius * 0.62f, dialTextPaint)
+    }
+
+    /**
+     * 手机轮廓 + 环形扫描弧（CONNECT PHONE / CONNECTING / SIGNAL LOST 共用）。
+     * fast: 握手阶段扫描加速（原版同款语义）；alert: 断链警示（轮廓转警示红、无扫描）。
+     */
+    private fun drawConnectScreen(
+        canvas: Canvas, cx: Float, cy: Float, radius: Float,
+        title: String, subtitle: String, fast: Boolean, alert: Boolean,
+    ) {
+        drawBrandLabel(canvas, cx, cy, radius)
+
+        val gy = cy - radius * 0.06f
+        // 手机圆角轮廓
+        val pw = radius * 0.30f
+        val ph = radius * 0.52f
+        val accent = if (alert) 0xFFE24B4A.toInt() else 0xFFD8D8D8.toInt()
+        outlinePaint.color = accent
+        outlinePaint.strokeWidth = radius * 0.016f
+        canvas.drawRoundRect(cx - pw / 2f, gy - ph / 2f, cx + pw / 2f, gy + ph / 2f, radius * 0.055f, radius * 0.055f, outlinePaint)
+        // 听筒线 + 主屏键条
+        canvas.drawLine(cx - pw * 0.16f, gy - ph / 2f + radius * 0.055f, cx + pw * 0.16f, gy - ph / 2f + radius * 0.055f, outlinePaint)
+        canvas.drawLine(cx - pw * 0.12f, gy + ph / 2f - radius * 0.04f, cx + pw * 0.12f, gy + ph / 2f - radius * 0.04f, outlinePaint)
+
+        if (!alert) {
+            // 环形扫描弧：绕手机中心旋转（半径收在标题上方，避免扫过文字）
+            val sweepR = radius * 0.38f
+            scanPaint.strokeWidth = radius * 0.018f
+            scanPaint.color = if (fast) 0xFFFFC94D.toInt() else 0xFF8A8A8A.toInt()
+            val startDeg = (lifecycleT * (if (fast) 300f else 110f)) % 360f
+            canvas.drawArc(cx - sweepR, gy - sweepR, cx + sweepR, gy + sweepR, startDeg, 72f, false, scanPaint)
+        } else {
+            // 断链：轮廓中央一道警示斜杠
+            canvas.drawLine(cx - pw * 0.34f, gy + ph * 0.34f, cx + pw * 0.34f, gy - ph * 0.34f, outlinePaint)
+        }
+
+        textPaint.textSize = radius * 0.098f
+        canvas.drawText(title, cx, cy + radius * 0.40f, textPaint)
+        hintPaint.textSize = radius * 0.062f
+        canvas.drawText(subtitle.take(16), cx, cy + radius * 0.53f, hintPaint)
+    }
+
+    /** CONNECTED：绿色圆形 + 白勾轻呼吸（约 0.92s 周期）。 */
+    private fun drawConnectedScreen(canvas: Canvas, cx: Float, cy: Float, radius: Float) {
+        drawBrandLabel(canvas, cx, cy, radius)
+        val gy = cy - radius * 0.06f
+        val breath = 0.5f + 0.5f * kotlin.math.sin(lifecycleT * (2f * Math.PI.toFloat()) / 0.92f)
+        circlePaint.color = 0xFF34C368.toInt()
+        circlePaint.alpha = (170 + 85 * breath).toInt()
+        val r = radius * (0.22f + 0.015f * breath)
+        canvas.drawCircle(cx, gy, r, circlePaint)
+        // 白勾
+        checkPaint.strokeWidth = radius * 0.028f
+        scratchPath.reset()
+        scratchPath.moveTo(cx - r * 0.42f, gy + r * 0.02f)
+        scratchPath.lineTo(cx - r * 0.10f, gy + r * 0.34f)
+        scratchPath.lineTo(cx + r * 0.46f, gy - r * 0.30f)
+        canvas.drawPath(scratchPath, checkPaint)
+
+        textPaint.textSize = radius * 0.098f
+        canvas.drawText("CONNECTED", cx, cy + radius * 0.40f, textPaint)
+        hintPaint.textSize = radius * 0.062f
+        canvas.drawText("连接成功", cx, cy + radius * 0.53f, hintPaint)
+    }
+
+    /** READY TO RIDE：黑白路线起终点图形轻呼吸（原版同款，替代裸文字「准备出发」）。 */
+    private fun drawReadyToRide(canvas: Canvas, cx: Float, cy: Float, radius: Float) {
+        drawBrandLabel(canvas, cx, cy, radius)
+        val breath = 0.5f + 0.5f * kotlin.math.sin(lifecycleT * (2f * Math.PI.toFloat()) / 1.6f)
+
+        val gy = cy - radius * 0.14f
+        val sx = radius * 0.52f
+        val sy = radius * 0.36f
+        val pts = planningRoutePts
+        val n = pts.size / 2
+        fun mx(i: Int) = cx + pts[i * 2] * sx
+        fun my(i: Int) = gy - pts[i * 2 + 1] * sy
+
+        routeUnderPaint.strokeWidth = radius * 0.046f
+        scratchPath.reset()
+        for (i in 0 until n) {
+            if (i == 0) scratchPath.moveTo(mx(i), my(i)) else scratchPath.lineTo(mx(i), my(i))
+        }
+        canvas.drawPath(scratchPath, routeUnderPaint)
+        routePaint.alpha = (150 + 105 * breath).toInt()
+        routePaint.strokeWidth = radius * 0.030f
+        canvas.drawPath(scratchPath, routePaint)
+        routePaint.alpha = 255
+        carPaint.alpha = (150 + 105 * breath).toInt()
+        canvas.drawCircle(mx(0), my(0), radius * 0.024f, carPaint)
+        iconPaint.strokeWidth = radius * 0.013f
+        iconPaint.alpha = (150 + 105 * breath).toInt()
+        canvas.drawCircle(mx(n - 1), my(n - 1), radius * 0.038f, iconPaint)
+        carPaint.alpha = 255
+        iconPaint.alpha = 255
+
+        textPaint.textSize = radius * 0.098f
+        canvas.drawText("READY TO RIDE", cx, cy + radius * 0.40f, textPaint)
+        hintPaint.textSize = radius * 0.062f
+        canvas.drawText("请在手机选择目的地", cx, cy + radius * 0.53f, hintPaint)
+    }
+
+    // endregion
 
     // region 导航页
 
