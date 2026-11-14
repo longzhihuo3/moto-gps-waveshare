@@ -302,6 +302,7 @@ data class NavSnapshotData(
     val gnssStale: Boolean get() = flags and 0x0004 != 0
     val offRoute: Boolean get() = flags and 0x0008 != 0
     val hasNextManeuver: Boolean get() = flags and 0x0010 != 0
+    val routeRequestInFlight: Boolean get() = flags and 0x0020 != 0
     val hasRouteView: Boolean get() = flags and 0x0080 != 0
     val speedKph: Float get() = speedDeciKph / 10f
     val headingDeg: Float get() = headingCdeg / 100f

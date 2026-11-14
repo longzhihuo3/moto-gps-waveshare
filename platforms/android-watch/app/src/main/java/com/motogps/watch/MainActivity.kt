@@ -361,7 +361,8 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
         if (++snapLogCounter % 30 == 1) {
             Log.i(
                 "MotoUI",
-                "nav route=${uiState.route?.let { "tok=${it.routeToken} gen=${it.generation} pts=${it.pointsE6.size / 2}" } ?: "null"} " +
+                "nav state=${snapshot.state}${if (snapshot.routeRequestInFlight) "+req" else ""} " +
+                    "route=${uiState.route?.let { "tok=${it.routeToken} gen=${it.generation} pts=${it.pointsE6.size / 2}" } ?: "null"} " +
                     "scene=${uiState.scene?.let { "roads=${it.roads.size} bld=${it.buildings.size}" } ?: "null"} " +
                     "flags=0x${snapshot.flags.toString(16)} maneuver=${snapshot.maneuver} dist=${snapshot.distanceToManeuverM}",
             )

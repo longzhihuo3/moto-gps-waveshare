@@ -174,7 +174,7 @@ class RoundView(context: Context) : View(context) {
     private fun tickAnimation(s: NavSnapshotData, dt: Float): Boolean {
         var moving = false
         // 规划页：路线描画循环（约 1.9s 一轮），驱动帧循环
-        if (s.state == 2) {
+        if (s.state == 1 || s.state == 2 || s.routeRequestInFlight) {
             routeAnimT = (routeAnimT + dt / 1.9f) % 1f
             moving = true
         }
@@ -380,10 +380,12 @@ class RoundView(context: Context) : View(context) {
             2 -> drawMusic(canvas, cx, cy, radius, s.media)
             else -> {
                 val snapshot = s.snapshot
-                if (snapshot == null || snapshot.state == 0 || snapshot.state == 1) {
+                if (snapshot == null || snapshot.state == 0) {
                     drawCentered(canvas, cx, cy, "准备出发", snapshot?.instruction?.takeIf { it.isNotEmpty() } ?: "")
-                } else if (snapshot.state == 2) {
-                    // 路线规划中：对齐原版 BUILDING ROUTE 页（路线描画动画）
+                } else if (snapshot.state == 1 || snapshot.state == 2 || snapshot.routeRequestInFlight) {
+                    // 已在出路线流程（等待定位/规划中/请求在途）：原版 BUILDING ROUTE 页。
+                    // 「等待定位」也算——会话开始后骑手视角就是在规划路线，
+                    // 且纯规划请求往往几百毫秒就结束，只认 state==2 会一闪而过。
                     drawBuildingRoute(canvas, cx, cy, radius)
                 } else {
                     drawNavigation(canvas, cx, cy, radius, snapshot)
