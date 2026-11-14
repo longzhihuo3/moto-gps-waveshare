@@ -12,6 +12,7 @@ import android.util.Log
 import android.view.GestureDetector
 import android.view.MotionEvent
 import android.view.View
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
@@ -28,6 +29,11 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
     private var ble: BlePeripheral? = null
     private val uiState = NavUiState()
     private var nextCommandId = 0
+
+    // 横向拖拽翻页状态（跟手滑动）
+    private var dragging = false
+    private var swipeTarget = -1
+    private var flingVx = 0f
 
     private val permissionLauncher =
         registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { granted ->
@@ -62,7 +68,7 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
             this,
             object : GestureDetector.SimpleOnGestureListener() {
                 override fun onSingleTapConfirmed(e: MotionEvent): Boolean {
-                    if (uiState.page == 3) {
+                    if (uiState.page == 2) { // 音乐页（本地 2 = 协议页 3）
                         val btn = roundView.musicButtonAt(e.x, e.y)
                         if (btn >= 0) {
                             sendCommand(kind = 16 + btn, page = 3) // 16上一首 17播放暂停 18下一首
@@ -76,27 +82,12 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
                 override fun onFling(
                     e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float,
                 ): Boolean {
+                    flingVx = velocityX
+                    if (dragging) return true // 横向拖拽翻页中，fling 只用于松手判定
                     val dx = e2.x - (e1?.x ?: e2.x)
                     val dy = e2.y - (e1?.y ?: e2.y)
                     Log.d("MotoUI", "fling dx=$dx dy=$dy vx=$velocityX vy=$velocityY page=${uiState.page}")
-                    if (abs(dx) > abs(dy) && abs(dx) > 60) {
-                        // 原版四页：导航→速度→航向→音乐；左滑下一页。
-                        // 手机端只认 kind=0 PageSelected（滑动 kind 3/4 会被拒收），
-                        // 本地乐观切换，快照 display_page 回来后以手机为准。
-                        // 音乐页例外：OPPO 手表内置音乐控制（com.heytap.wearable.
-                        // musiccontroller）已通过系统蓝牙联动手机播放，直接拉起，
-                        // 本地页保持不变（返回时仍停在航向页）。
-                        val delta = if (dx < 0) 1 else -1
-                        val newPage = (uiState.page + delta + 4) % 4
-                        if (newPage == 3) {
-                            launchSystemMusicController()
-                        } else {
-                            uiState.page = newPage
-                            roundView.state = uiState
-                            sendCommand(kind = 0, page = newPage)
-                        }
-                        return true
-                    }
+                    if (abs(dx) > abs(dy) && abs(dx) > 60) return true // 横向滑动统一走拖拽翻页
                     val kind = when {
                         dy < 0 -> 5  // SwipeUp
                         else -> 6    // SwipeDown
@@ -106,8 +97,47 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
                 }
             },
         )
+        // 页面滑动结算：RoundView 动画结束后回调（本地页 0导航 1速度 2音乐）
+        roundView.onPageSettled = { target -> commitPage(target) }
+        val touchSlop = ViewConfiguration.get(this).scaledTouchSlop
+        var downX = 0f
+        var downY = 0f
         roundView.setOnTouchListener { v, event ->
             gesture.onTouchEvent(event)
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> {
+                    downX = event.x
+                    downY = event.y
+                    flingVx = 0f
+                }
+                MotionEvent.ACTION_MOVE -> {
+                    val dx = event.x - downX
+                    val dy = event.y - downY
+                    if (!dragging && abs(dx) > touchSlop && abs(dx) > abs(dy) * 1.3f) {
+                        // 本地三页循环：0导航 1速度 2音乐；左滑下一页（方向与系统一致）
+                        val from = uiState.page
+                        val target = from + if (dx < 0) 1 else -1
+                        if (target in 0..2) {
+                            dragging = true
+                            swipeTarget = target
+                            roundView.beginPageSwipe(from, target)
+                        }
+                    }
+                    if (dragging) {
+                        roundView.updatePageSwipe(abs(event.x - downX) / v.width.toFloat())
+                    }
+                }
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
+                    if (dragging) {
+                        dragging = false
+                        val from = uiState.page
+                        val forward = roundView.currentSwipeProgress > 0.42f ||
+                            (swipeTarget > from && flingVx < -900f) ||
+                            (swipeTarget < from && flingVx > 900f)
+                        roundView.settlePageSwipe(if (forward) swipeTarget else from)
+                    }
+                }
+            }
             v.performClick()
             true
         }
@@ -223,12 +253,28 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
     private fun sendCommand(kind: Int, page: Int) {
         val peripheral = ble ?: return
         nextCommandId = if (nextCommandId >= 0xFFFF) 1 else nextCommandId + 1
+        // 本地页→协议页映射（协议 2 航向已移除，本地 2 音乐 = 协议 3）
+        val protoPage = if (page == 2) 3 else page
         peripheral.sendDeviceCommand(
             kind = kind,
             commandId = nextCommandId,
-            page = page,
+            page = protoPage,
             eventTimeMs = SystemClock.uptimeMillis(),
         )
+    }
+
+    /**
+     * 滑动过渡结束后的页面提交（本地页：0导航 1速度 2音乐）。
+     * 滑到音乐页时同时拉起 OPPO 内置音乐控制（系统级联动，用户反馈体验好）。
+     */
+    private fun commitPage(target: Int) {
+        val changed = target != uiState.page
+        uiState.page = target
+        roundView.state = uiState
+        if (changed) {
+            sendCommand(kind = 0, page = target)
+            if (target == 2) launchSystemMusicController()
+        }
     }
 
     /** 拉起 OPPO 内置音乐控制（系统级联动手机播放），优先官方蓝牙音乐动作。 */
@@ -276,9 +322,16 @@ class MainActivity : AppCompatActivity(), BlePeripheral.Listener {
 
     override fun onSnapshot(snapshot: NavSnapshotData) {
         uiState.snapshot = snapshot
-        // 手机是页面权威：快照 display_page 变化时同步本地页（0导航 1速度 2航向 3音乐）
-        if (snapshot.displayPage in 0..3 && snapshot.displayPage != uiState.page) {
-            uiState.page = snapshot.displayPage
+        // 手机是页面权威：快照 display_page 同步本地页。
+        // 协议页 0导航 1速度 2航向(已移除，忽略) 3音乐(本地 2)。
+        val localPage = when (snapshot.displayPage) {
+            0 -> 0
+            1 -> 1
+            3 -> 2
+            else -> -1
+        }
+        if (localPage >= 0 && localPage != uiState.page) {
+            uiState.page = localPage
         }
         if (++snapLogCounter % 30 == 1) {
             Log.i(

@@ -17,7 +17,7 @@ import kotlin.math.min
 import kotlin.math.roundToInt
 import kotlin.math.sin
 
-/** UI 层聚合状态（主线程更新后 invalidate）。page: 0导航 1速度 2航向 3音乐。 */
+/** UI 层聚合状态（主线程更新后 invalidate）。page: 0导航 1速度 2音乐（协议页 3，航向页已移除）。 */
 data class NavUiState(
     var advertising: Boolean = false,
     var centralConnected: Boolean = false,
@@ -83,7 +83,9 @@ class RoundView(context: Context) : View(context) {
         override fun doFrame(ns: Long) {
             val dt = if (lastFrameNs == 0L) 0.016f else ((ns - lastFrameNs) / 1e9f).coerceIn(0.001f, 0.1f)
             lastFrameNs = ns
-            val stillMoving = state.snapshot?.let { tickAnimation(it, dt) } ?: false
+            // 页面滑动过渡独立于快照驱动（无快照时也能动画）
+            val swipeStill = tickSwipe(dt)
+            val stillMoving = swipeStill || (state.snapshot?.let { tickAnimation(it, dt) } ?: false)
             if (stillMoving) {
                 invalidate()
                 choreographer.postFrameCallback(this)
@@ -98,6 +100,74 @@ class RoundView(context: Context) : View(context) {
         animating = true
         lastFrameNs = 0L
         choreographer.postFrameCallback(frameCallback)
+    }
+
+    // ---- 页面滑动过渡（类系统 ViewPager 手感）：拖拽跟手 + 松手缓动收尾 ----
+    /** 滑动结算落地（target 为本地页 0..2），主线程回调；Activity 在此提交页面与命令。 */
+    var onPageSettled: ((Int) -> Unit)? = null
+    private var swipeFromPage = -1
+    private var swipeTargetPage = -1
+    private var swipeProgress = 0f // 0=起始页 1=目标页
+    private var settling = false
+    private var settleFrom = 0f
+    private var settleTarget = 0f
+    private var settleElapsedMs = 0L
+    private var settleDurationMs = 0L
+
+    /** 当前拖拽进度（0..1），Activity 松手时判定是否翻页用。 */
+    val currentSwipeProgress: Float get() = swipeProgress
+
+    /** 开始一次页面滑动（from/target 均为本地页）。若上次过渡未结束，先按最近页即时结算。 */
+    fun beginPageSwipe(from: Int, target: Int) {
+        if (swipeTargetPage >= 0) {
+            val nearest = if (swipeProgress > 0.5f) swipeTargetPage else swipeFromPage
+            swipeTargetPage = -1
+            onPageSettled?.invoke(nearest) // commitPage 内部会判重，重复结算无副作用
+        }
+        swipeFromPage = from
+        swipeTargetPage = target
+        swipeProgress = 0f
+        settling = false
+        startAnim()
+        invalidate()
+    }
+
+    /** 拖拽跟手：progress 0..1。 */
+    fun updatePageSwipe(progress: Float) {
+        if (swipeTargetPage < 0 || settling) return
+        swipeProgress = progress.coerceIn(0f, 1f)
+        startAnim()
+        invalidate()
+    }
+
+    /** 松手：以缓动动画滑到 target（只能是起始页或目标页）。 */
+    fun settlePageSwipe(target: Int) {
+        if (swipeTargetPage < 0) return
+        settling = true
+        settleFrom = swipeProgress
+        settleTarget = if (target == swipeTargetPage) 1f else 0f
+        settleElapsedMs = 0L
+        // 距离越远时长略长，但上限压短，保持「干脆」的系统手感
+        settleDurationMs = (110f + 160f * abs(settleTarget - settleFrom)).toLong().coerceIn(90L, 260L)
+        startAnim()
+    }
+
+    /** 每帧推进滑动过渡；返回是否仍在动画。 */
+    private fun tickSwipe(dt: Float): Boolean {
+        if (swipeTargetPage < 0) return false
+        if (!settling) return true
+        settleElapsedMs += (dt * 1000f).toLong()
+        val t = (settleElapsedMs.toFloat() / settleDurationMs).coerceIn(0f, 1f)
+        val ease = 1f - (1f - t) * (1f - t) // 二次缓出（系统 decelerate 同族）
+        swipeProgress = settleFrom + (settleTarget - settleFrom) * ease
+        if (t >= 1f) {
+            val done = swipeTargetPage
+            swipeTargetPage = -1
+            onPageSettled?.invoke(done)
+            invalidate()
+            return false
+        }
+        return true
     }
 
     /** 向目标值缓动；返回是否仍需要继续画帧。 */
@@ -228,11 +298,6 @@ class RoundView(context: Context) : View(context) {
         color = 0xFFB8B8B8.toInt()
         textAlign = Paint.Align.CENTER
     }
-    private val warmTextPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        color = 0xFFFFC94D.toInt()
-        textAlign = Paint.Align.CENTER
-    }
-    private val northPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFFE24B4A.toInt() }
     private val discFillPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = 0xFF202020.toInt() }
     private val discRingPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFF4A4A4A.toInt()
@@ -279,23 +344,44 @@ class RoundView(context: Context) : View(context) {
             !s.protocolReady -> drawCentered(canvas, cx, cy, "已连接", "等待手机确认…")
             !s.linkActive -> drawCentered(canvas, cx, cy, "信号丢失", "请确认手机 MOTO GPS App 在前台")
             else -> {
-                when (s.page) {
-                    1 -> s.snapshot?.let { drawSpeed(canvas, cx, cy, radius, it) }
-                    2 -> s.snapshot?.let { drawCompass(canvas, cx, cy, radius, it) }
-                    3 -> drawMusic(canvas, cx, cy, radius, s.media)
-                    0 -> {
-                        val snapshot = s.snapshot
-                        if (snapshot == null || snapshot.state == 0 || snapshot.state == 1 || snapshot.state == 2) {
-                            drawCentered(canvas, cx, cy, "准备出发", snapshot?.instruction?.takeIf { it.isNotEmpty() } ?: "")
-                        } else {
-                            drawNavigation(canvas, cx, cy, radius, snapshot)
-                        }
-                    }
+                if (swipeTargetPage >= 0) {
+                    // 双页滑动过渡：两页并排横移（dir=+1 内容左移翻下一页）
+                    val dir = swipeTargetPage - swipeFromPage
+                    val w = width.toFloat()
+                    canvas.save()
+                    canvas.translate(-dir * swipeProgress * w, 0f)
+                    drawPage(canvas, cx, cy, radius, swipeFromPage)
+                    canvas.restore()
+                    canvas.save()
+                    canvas.translate(dir * (1f - swipeProgress) * w, 0f)
+                    drawPage(canvas, cx, cy, radius, swipeTargetPage)
+                    canvas.restore()
+                } else {
+                    drawPage(canvas, cx, cy, radius, state.page)
                 }
-                if (s.page != 0) drawPageDots(canvas, cx, cy, radius, s.page)
+                // 页点：滑动中以视觉页为准；过渡期间始终显示给出位置反馈
+                val visualPage = if (swipeTargetPage >= 0 && swipeProgress > 0.5f) swipeTargetPage else state.page
+                if (state.page != 0 || swipeTargetPage >= 0) drawPageDots(canvas, cx, cy, radius, visualPage)
             }
         }
         canvas.restore()
+    }
+
+    /** 绘制单页内容（本地页：0导航 1速度 2音乐）。 */
+    private fun drawPage(canvas: Canvas, cx: Float, cy: Float, radius: Float, page: Int) {
+        val s = state
+        when (page) {
+            1 -> s.snapshot?.let { drawSpeed(canvas, cx, cy, radius, it) }
+            2 -> drawMusic(canvas, cx, cy, radius, s.media)
+            else -> {
+                val snapshot = s.snapshot
+                if (snapshot == null || snapshot.state == 0 || snapshot.state == 1 || snapshot.state == 2) {
+                    drawCentered(canvas, cx, cy, "准备出发", snapshot?.instruction?.takeIf { it.isNotEmpty() } ?: "")
+                } else {
+                    drawNavigation(canvas, cx, cy, radius, snapshot)
+                }
+            }
+        }
     }
 
     private fun drawCentered(canvas: Canvas, cx: Float, cy: Float, title: String, subtitle: String) {
@@ -451,18 +537,14 @@ class RoundView(context: Context) : View(context) {
         drawManeuver(canvas, startX + iconSize * 0.6f, baseY - radius * 0.07f, iconSize, snapshot.maneuver)
         canvas.drawText(distText, startX + iconSize * 1.2f + gap, baseY, textPaint)
 
-        // 6. 顶部道路名 / 限速牌 / 小速度（原版设计：有限速数据时优先限速牌）
+        // 6. 顶部信息区：左上速度 / 中上道路名 / 右上限速牌
+        drawNavSpeed(canvas, cx - radius * 0.62f, cy - radius * 0.53f, radius)
         if (snapshot.roadName.isNotEmpty()) {
             hintPaint.textSize = radius * 0.085f
             canvas.drawText(snapshot.roadName.take(12), cx, cy - radius * 0.74f, hintPaint)
         }
         if (snapshot.speedLimitKph > 0) {
             drawSpeedLimit(canvas, cx + radius * 0.62f, cy - radius * 0.52f, radius * 0.13f, snapshot.speedLimitKph)
-        } else if (snapshot.speedDeciKph > 0) {
-            textPaint.textSize = radius * 0.10f
-            canvas.drawText("${snapshot.speedKph.roundToInt()}", cx + radius * 0.62f, cy - radius * 0.55f, textPaint)
-            hintPaint.textSize = radius * 0.055f
-            canvas.drawText("km/h", cx + radius * 0.62f, cy - radius * 0.44f, hintPaint)
         }
         if (snapshot.offRoute) {
             textPaint.textSize = radius * 0.10f
@@ -472,8 +554,23 @@ class RoundView(context: Context) : View(context) {
         }
     }
 
-    private fun drawSpeedLimit(canvas: Canvas, cx: Float, cy: Float, r: Float, limitKph: Int) {
-        canvas.drawCircle(cx, cy, r, limitBgPaint)
+    /** 导航页常显速度：数值按整数缓存，仅变化时重建字符串（避免 60fps 分配触发 GC 卡顿）。 */
+    private var cachedNavSpeed = Int.MIN_VALUE
+    private var cachedNavSpeedText = "0"
+
+    private fun drawNavSpeed(canvas: Canvas, x: Float, y: Float, radius: Float) {
+        val spd = smoothSpeed().roundToInt()
+        if (spd != cachedNavSpeed) {
+            cachedNavSpeed = spd
+            cachedNavSpeedText = spd.toString()
+        }
+        textPaint.textSize = radius * 0.115f
+        canvas.drawText(cachedNavSpeedText, x, y, textPaint)
+        hintPaint.textSize = radius * 0.05f
+        canvas.drawText("km/h", x, y + radius * 0.075f, hintPaint)
+    }
+
+    private fun drawSpeedLimit(canvas: Canvas, cx: Float, cy: Float, r: Float, limitKph: Int) {        canvas.drawCircle(cx, cy, r, limitBgPaint)
         limitRingPaint.strokeWidth = r * 0.26f
         canvas.drawCircle(cx, cy, r - r * 0.13f, limitRingPaint)
         limitTextPaint.textSize = r * 0.82f
@@ -624,51 +721,6 @@ class RoundView(context: Context) : View(context) {
 
     // endregion
 
-    // region 航向页
-
-    private fun drawCompass(canvas: Canvas, cx: Float, cy: Float, radius: Float, snapshot: NavSnapshotData) {
-        val heading = smoothHeading(snapshot)
-        val ringR = radius * 0.80f
-
-        // 旋转刻度盘：方位角 b 的刻度出现在屏幕角 (b - heading)
-        for (b in 0 until 360 step 15) {
-            val cardinal = b % 90 == 0
-            tickPaint.strokeWidth = radius * if (cardinal) 0.014f else 0.008f
-            tickPaint.color = if (cardinal) 0xFF8A8A8A.toInt() else 0xFF444444.toInt()
-            drawRadialTick(canvas, cx, cy, ringR, b - heading, radius * if (cardinal) 0.08f else 0.05f)
-        }
-        // 方位字母（N 黄色高亮，参照原版）
-        dialTextPaint.textSize = radius * 0.09f
-        val labels = listOf("N" to 0f, "E" to 90f, "S" to 180f, "W" to 270f)
-        for ((label, b) in labels) {
-            val angle = Math.toRadians(((b - heading + 360f) % 360f - 90f).toDouble())
-            val lx = cx + (ringR - radius * 0.14f) * kotlin.math.cos(angle).toFloat()
-            val ly = cy + (ringR - radius * 0.14f) * kotlin.math.sin(angle).toFloat()
-            dialTextPaint.color = if (label == "N") 0xFFFFC94D.toInt() else 0xFFB8B8B8.toInt()
-            canvas.drawText(label, lx, ly + radius * 0.03f, dialTextPaint)
-        }
-        dialTextPaint.color = 0xFFB8B8B8.toInt()
-        // 顶部红色基准标记（固定，指向行进方向）
-        canvas.drawPath(scratchPath.apply {
-            reset()
-            val ty = cy - ringR - radius * 0.02f
-            moveTo(cx, ty - radius * 0.045f)
-            lineTo(cx + radius * 0.028f, ty + radius * 0.02f)
-            lineTo(cx, ty + radius * 0.01f)
-            lineTo(cx - radius * 0.028f, ty + radius * 0.02f)
-            close()
-        }, northPaint)
-
-        // 中心读数
-        warmTextPaint.textSize = radius * 0.26f
-        canvas.drawText("${heading.roundToInt()}°", cx, cy + radius * 0.02f, warmTextPaint)
-        val winds = listOf("N", "NE", "E", "SE", "S", "SW", "W", "NW")
-        dialTextPaint.textSize = radius * 0.10f
-        canvas.drawText(winds[((heading + 22.5f).roundToInt() / 45) % 8], cx, cy + radius * 0.17f, dialTextPaint)
-        hintPaint.textSize = radius * 0.075f
-        canvas.drawText("${smoothSpeed().roundToInt()} km/h", cx, cy + radius * 0.32f, hintPaint)
-    }
-
     private fun drawRadialTick(canvas: Canvas, cx: Float, cy: Float, ringR: Float, angleDeg: Float, len: Float) {
         val rad = Math.toRadians((angleDeg - 90f).toDouble())
         val cos = kotlin.math.cos(rad).toFloat()
@@ -768,9 +820,9 @@ class RoundView(context: Context) : View(context) {
     private fun drawPageDots(canvas: Canvas, cx: Float, cy: Float, radius: Float, page: Int) {
         val y = cy + radius * 0.90f
         val spacing = radius * 0.09f
-        for (i in 0 until 4) {
+        for (i in 0 until 3) {
             val p = Paint().apply { color = if (i == page) Color.WHITE else 0xFF3A3A3A.toInt() }
-            canvas.drawCircle(cx + (i - 1.5f) * spacing, y, radius * 0.014f, p)
+            canvas.drawCircle(cx + (i - 1f) * spacing, y, radius * 0.014f, p)
         }
     }
 
