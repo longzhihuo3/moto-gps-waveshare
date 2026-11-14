@@ -118,7 +118,7 @@ final class MotoWifiLink {
             lastRouteKey = nil
             isActive = true
             DispatchQueue.main.async { [weak self] in self?.onLinkChanged?(true) }
-            sendLocked(["type": "hello", "ver": 1, "name": UIDeviceName()])
+            sendLocked(["type": "hello", "ver": 1, "name": Self.deviceDisplayName()])
             receiveLoop()
         case .failed, .cancelled:
             scanConnections.removeAll { $0 === connection }
@@ -171,7 +171,10 @@ final class MotoWifiLink {
         guard key != lastRouteKey else { return }
         lastRouteKey = key
         // token 仅作展示关联，与 BLE routeToken 无强一致需求
-        let token = UInt64(UInt(bitPattern: Int64(state.routeID.hashValue)) % 1_000_000_007)
+        var token: UInt64 = 0
+        for byte in state.routeID.utf8 {
+            token = (token &* 31 &+ UInt64(byte)) % 1_000_000_007
+        }
         let json: [String: Any] = [
             "type": "route",
             "token": token,
@@ -302,7 +305,7 @@ final class MotoWifiLink {
         return addresses
     }
 
-    private static func UIDeviceName() -> String {
+    private static func deviceDisplayName() -> String {
         #if canImport(UIKit)
         return UIDevice.current.name
         #else
