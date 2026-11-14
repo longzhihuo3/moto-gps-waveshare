@@ -89,6 +89,25 @@ adb shell dumpsys deviceidle whitelist +com.motogps.watch
 直接使用上游 [iOS 侧载教程](docs/IOS_SIDELOAD.md)（SideStore 免签名安装，免费 Apple ID 7 天续签），
 或 fork 本仓库后由 GitHub Actions（`ios-sideload.yml`）自动构建未签名 IPA。
 
+### 2b. 安卓手机 App（无需 iPhone）
+
+上游已包含原生安卓手机 App（`platforms/android`，Kotlin + Compose）——搜索目的地、
+路线预览、BLE 连接圆屏、锁屏前台导航，与 iOS 共用同一套 C++ 导航核心与协议栈，
+不依赖 Google Play 服务：
+
+```bash
+cd platforms/android
+gradle assembleDebug   # 需要 JDK 17、Android SDK 与 NDK（shared C++ 经 NDK 编译）
+```
+
+- 配对：首次连接手表会弹系统配对框（LE Just Works），点「配对」即可；
+- 定位使用系统 GPS（WGS84），无 GMS 的国产手机可用；
+- 音乐控制走系统媒体会话（网易云 / QQ 音乐 / Spotify 等均可），需授予「通知使用权」；
+- 网关地址在 App 内设置，同一局域网下直连延迟最低。
+
+> 注：上游标注「真机配对与骑行仍在验证中」，与本仓库手表 App 的组合同样处于实验阶段，
+> 欢迎提 Issue 反馈机型与现象。
+
 ### 3. 路线网关
 
 ```bash
