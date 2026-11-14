@@ -89,8 +89,11 @@ test("fixture routes, route options, validation and optional base path use the s
 test("live mode forwards route, POI and city queries to AMap without exposing its key", async (t) => {
   const seen = [];
   const mf = await runtime(t, { MOTO_PROVIDER: "amap", AMAP_WEB_SERVICE_KEY: "secret-test-key", MOTO_MAP_PMTILES_URL: "disabled" }, (request) => {
-    const url = new URL(request.url); seen.push(url.pathname);
-    assert.equal(url.hostname, "restapi.amap.com");
+    const url = new URL(request.url);
+    // Best-effort OSM maxspeed enrichment calls Overpass on a best-effort basis;
+    // it is not an AMap upstream and must neither count in `seen` nor see the key.
+    if (url.hostname !== "restapi.amap.com") return Response.json({ elements: [] });
+    seen.push(url.pathname);
     assert.equal(url.searchParams.get("key"), "secret-test-key");
     if (url.pathname === "/v5/direction/driving") return new Response(routeFixture);
     if (url.pathname === "/v5/place/text") return Response.json({ status: "1", pois: [{ id: "test-poi", name: "济南站", location: "117.0,36.6" }] });
