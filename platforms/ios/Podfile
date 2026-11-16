@@ -6,8 +6,8 @@ platform :ios, '17.0'
 target 'MotoGPS' do
   use_frameworks! :linkage => :static
 
-  pod 'AMapNavi'
-  pod 'AMapSearch'
+  pod 'AMapNavi', '11.3.100'
+  pod 'AMapSearch', '9.8.1'
 end
 
 post_install do |installer|
