@@ -28,7 +28,7 @@ jobs:
           command -v pod || sudo gem install cocoapods
           xcodebuild -version
           xcodegen generate --spec platforms/ios/project.yml
-          pod install --project-directory platforms/ios
+          (cd platforms/ios && pod install)
       - name: Select available iPhone simulator
         id: simulator
         run: |
