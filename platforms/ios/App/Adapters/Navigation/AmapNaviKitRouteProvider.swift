@@ -150,9 +150,9 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         }
     }
 
-    func rideManagerOnCalculateRouteSuccess(
+    func rideManager(
         _ rideManager: AMapNaviRideManager,
-        calculateRouteResult: AMapNaviCalculateRouteResult
+        onCalculateRouteSuccess calculateRouteResult: AMapNaviCalculateRouteResult
     ) {
         finishWithRoutes(from: rideManager)
     }
@@ -161,9 +161,9 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         finishWithFailure(error)
     }
 
-    func walkManagerOnCalculateRouteSuccess(
+    func walkManager(
         _ walkManager: AMapNaviWalkManager,
-        calculateRouteResult: AMapNaviCalculateRouteResult
+        onCalculateRouteSuccess calculateRouteResult: AMapNaviCalculateRouteResult
     ) {
         finishWithRoutes(from: walkManager)
     }
