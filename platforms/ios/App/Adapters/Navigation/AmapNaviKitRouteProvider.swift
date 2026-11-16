@@ -117,28 +117,30 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
                 self?.failOldestPending(error: AmapNaviKitError.timedOut)
             }
 
-            let originGCJ = GCJ02CoordinateMath.wgs84ToGCJ02(
+            let startGCJ = GCJ02CoordinateMath.wgs84ToGCJ02(
                 longitudeDeg: originWGS84.longitudeDeg,
                 latitudeDeg: originWGS84.latitudeDeg
             )
-            let destinationGCJ = GCJ02CoordinateMath.wgs84ToGCJ02(
+            let endGCJ = GCJ02CoordinateMath.wgs84ToGCJ02(
                 longitudeDeg: destinationWGS84.longitudeDeg,
                 latitudeDeg: destinationWGS84.latitudeDeg
             )
-            let start = AMapNaviPoint.location(
-                withLatitude: CGFloat(originGCJ.latitudeDeg),
-                longitude: CGFloat(originGCJ.longitudeDeg)
-            )
-            let end = AMapNaviPoint.location(
-                withLatitude: CGFloat(destinationGCJ.latitudeDeg),
-                longitude: CGFloat(destinationGCJ.longitudeDeg)
-            )
+            guard let start = AMapNaviPoint.location(
+                withLatitude: CGFloat(startGCJ.latitudeDeg),
+                longitude: CGFloat(startGCJ.longitudeDeg)
+            ), let end = AMapNaviPoint.location(
+                withLatitude: CGFloat(endGCJ.latitudeDeg),
+                longitude: CGFloat(endGCJ.longitudeDeg)
+            ) else {
+                failOldestPending(error: AmapNaviKitError.rejected("坐标转换失败"))
+                return
+            }
 
             let accepted: Bool
             if mode == .riding {
                 let manager = AMapNaviRideManager.sharedInstance()
                 manager.delegate = self
-                accepted = manager.calculateRideRoute(withStartPoint: start, endPoint: end)
+                accepted = manager.calculateRideRoute(withStart: start, end: end)
             } else {
                 let manager = AMapNaviWalkManager.sharedInstance()
                 manager.delegate = self
@@ -173,30 +175,22 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
     }
 
     private func finishWithRoutes(from manager: AMapNaviRideManager) {
-        lock.lock()
-        let pending = pendingQueue.isEmpty ? nil : pendingQueue.removeFirst()
-        lock.unlock()
-        guard let pending else { return }
-
-        let routeIDs = manager.naviRouteIDs ?? []
-        let routesByID = manager.naviRoutes ?? [:]
-        let orderedRoutes = routeIDs.compactMap { routesByID[$0] }
-        let plans = orderedRoutes.compactMap { Self.convert($0, mode: pending.mode) }
-        guard !plans.isEmpty else {
-            pending.continuation.resume(throwing: AmapNaviKitError.noRoute)
-            return
-        }
-        pending.continuation.resume(returning: Array(plans.prefix(3)))
+        finishWithRoutes(routeIDs: manager.naviRouteIDs(), routesByID: manager.naviRoutes())
     }
 
     private func finishWithRoutes(from manager: AMapNaviWalkManager) {
+        finishWithRoutes(routeIDs: manager.naviRouteIDs(), routesByID: manager.naviRoutes())
+    }
+
+    private func finishWithRoutes(
+        routeIDs: [NSNumber],
+        routesByID: [NSNumber: AMapNaviRoute]
+    ) {
         lock.lock()
         let pending = pendingQueue.isEmpty ? nil : pendingQueue.removeFirst()
         lock.unlock()
         guard let pending else { return }
 
-        let routeIDs = manager.naviRouteIDs ?? []
-        let routesByID = manager.naviRoutes ?? [:]
         let orderedRoutes = routeIDs.compactMap { routesByID[$0] }
         let plans = orderedRoutes.compactMap { Self.convert($0, mode: pending.mode) }
         guard !plans.isEmpty else {
@@ -225,7 +219,7 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
     }
 
     private static func convert(_ route: AMapNaviRoute, mode: AmapNaviKitRouteProvider.TravelMode) -> RoutePlan? {
-        let polyline = (route.routeCoordinates ?? []).map {
+        let polyline = route.routeCoordinates.map {
             GCJ02Point(longitudeDeg: Double($0.longitude), latitudeDeg: Double($0.latitude))
         }
         guard polyline.count >= 2, route.routeLength > 0 else { return nil }
@@ -233,9 +227,9 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         var maneuvers: [RouteManeuver] = []
         var offsetM: Double = 0
         var maneuverID: UInt32 = 0
-        for segment in route.routeSegments ?? [] {
+        for segment in route.routeSegments {
             let icon = segment.iconType
-            if isRealManeuver(icon), let first = segment.coordinates?.first {
+            if isRealManeuver(icon), let first = segment.coordinates.first {
                 maneuverID += 1
                 maneuvers.append(
                     RouteManeuver(
@@ -255,7 +249,7 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
             RouteManeuver(
                 id: maneuverID,
                 type: .arrive,
-                routeOffsetM: route.routeLength,
+                routeOffsetM: Double(route.routeLength),
                 roadName: "",
                 instruction: "到达目的地"
             )
@@ -276,7 +270,7 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
     }
 
     private static func roadName(of segment: AMapNaviSegment) -> String {
-        (segment.links ?? []).compactMap { $0.roadName }.first { !$0.isEmpty } ?? ""
+        segment.links.compactMap { $0.roadName }.first { !$0.isEmpty } ?? ""
     }
 
     private static func isRealManeuver(_ icon: AMapNaviIconType) -> Bool {
