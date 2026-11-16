@@ -25,8 +25,10 @@ jobs:
       - name: Prepare Xcode project
         run: |
           command -v xcodegen || brew install xcodegen
+          command -v pod || sudo gem install cocoapods
           xcodebuild -version
           xcodegen generate --spec platforms/ios/project.yml
+          pod install --project-directory platforms/ios
       - name: Select available iPhone simulator
         id: simulator
         run: |
@@ -41,7 +43,7 @@ jobs:
           PY
       - name: App unit tests and offline gateway UI tests
         run: |
-          xcodebuild test -project platforms/ios/MotoGPS.xcodeproj -scheme MotoGPS \
+          xcodebuild test -workspace platforms/ios/MotoGPS.xcworkspace -scheme MotoGPS \
             -destination 'platform=iOS Simulator,id=${{ steps.simulator.outputs.id }}' \
             -derivedDataPath build/ios-tests -resultBundlePath build/GatewayTests.xcresult \
             -only-testing:MotoGPSUnitTests -only-testing:MotoGPSUITests/GatewaySettingsUITests \

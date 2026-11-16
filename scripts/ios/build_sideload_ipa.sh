@@ -9,7 +9,9 @@ derived_dir="$output_dir/DerivedData"
 staging_dir="$(mktemp -d)"
 trap 'rm -rf "$staging_dir"' EXIT
 xcodegen generate --spec "$repo_root/platforms/ios/project.yml"
-xcodebuild -project "$repo_root/platforms/ios/MotoGPS.xcodeproj" \
+command -v pod >/dev/null 2>&1 || brew install cocoapods
+pod install --project-directory "$repo_root/platforms/ios"
+xcodebuild -workspace "$repo_root/platforms/ios/MotoGPS.xcworkspace" \
   -scheme MotoGPS -configuration Release -destination 'generic/platform=iOS' \
   -derivedDataPath "$derived_dir" \
   CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO DEVELOPMENT_TEAM= build

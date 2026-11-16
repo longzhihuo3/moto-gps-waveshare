@@ -44,7 +44,7 @@ private struct PlaceGatewayFailure: Decodable {
     let message: String
 }
 
-final class AmapGatewayPlaceProvider: @unchecked Sendable {
+final class AmapGatewayPlaceProvider: PlaceSearching, @unchecked Sendable {
     private let baseURL: URL
     private let session: URLSession
     private let decoder = JSONDecoder()

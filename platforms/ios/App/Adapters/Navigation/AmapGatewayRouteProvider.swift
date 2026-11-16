@@ -19,7 +19,7 @@ enum AmapGatewayError: LocalizedError {
 }
 
 /// Calls the project's own gateway. It never accepts or transports an AMap API key.
-final class AmapGatewayRouteProvider: NavigationRouteProviding, @unchecked Sendable {
+final class AmapGatewayRouteProvider: NavigationRouteProviding, NavigationRouteOptionsProviding, @unchecked Sendable {
     private let baseURL: URL
     private let session: URLSession
     private let encoder = JSONEncoder()

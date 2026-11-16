@@ -26,9 +26,10 @@ final class AppModel: ObservableObject {
     private let bluetooth = ESP32BLECentral()
     private let liveLocation = CoreLocationNavigationSource()
     private let searchLocation = SearchLocationBiasSource()
-    private var liveRouteProvider: AmapGatewayRouteProvider
-    private var placeProvider: AmapGatewayPlaceProvider
+    private var liveRouteProvider: any NavigationRouteProviding & NavigationRouteOptionsProviding
+    private var placeProvider: any PlaceSearching
     private let mediaController = AppleMusicRemoteController()
+    private let voiceAnnouncer = VoiceAnnouncer()
     let surroundingMap: SurroundingMapStore
     @Published private(set) var mapGatewayBaseURL: URL
     @Published private(set) var isUpdatingGateway = false
@@ -41,14 +42,18 @@ final class AppModel: ObservableObject {
     private static let recentPlacesKey = "MotoGPS.RecentPlaces.v1"
 
     init(gatewayBaseURL: URL = AppConfiguration.gatewayBaseURL) {
-        liveRouteProvider = AmapGatewayRouteProvider(baseURL: gatewayBaseURL)
-        placeProvider = AmapGatewayPlaceProvider(baseURL: gatewayBaseURL)
+        liveRouteProvider = Self.makeLiveRouteProvider(baseURL: gatewayBaseURL)
+        placeProvider = Self.makePlaceProvider(baseURL: gatewayBaseURL)
         mapGatewayBaseURL = gatewayBaseURL
         surroundingMap = SurroundingMapStore(baseURL: gatewayBaseURL)
         recentPlaces = Self.loadRecentPlaces()
 
         surroundingMap.onScene = { [weak self] scene in
             self?.bluetooth.sendMapScene(scene)
+        }
+
+        if AppConfiguration.amapKeyConfigured {
+            AmapNaviKitBootstrap.install(apiKey: AppConfiguration.amapKey)
         }
 
         bluetooth.onSnapshotChange = { [weak self] snapshot in
@@ -128,6 +133,27 @@ final class AppModel: ObservableObject {
         (try? GatewayConfiguration.normalizedURL(mapGatewayBaseURL.absoluteString)) != nil
     }
 
+    /// Route planning and destination search run on-device through
+    /// AMapNaviKit when a key is configured; the gateway is only needed for
+    /// the surrounding-map scene. Navigation without the gateway is valid.
+    var isNavigationServiceConfigured: Bool {
+        isGatewayConfigured || AppConfiguration.amapKeyConfigured
+    }
+
+    private static func makeLiveRouteProvider(baseURL: URL) -> any NavigationRouteProviding & NavigationRouteOptionsProviding {
+        if AppConfiguration.amapKeyConfigured {
+            return AmapNaviKitRouteProvider(travelMode: AppConfiguration.naviTravelMode)
+        }
+        return AmapGatewayRouteProvider(baseURL: baseURL)
+    }
+
+    private static func makePlaceProvider(baseURL: URL) -> any PlaceSearching {
+        if AppConfiguration.amapKeyConfigured {
+            return AmapNaviKitPlaceProvider()
+        }
+        return AmapGatewayPlaceProvider(baseURL: baseURL)
+    }
+
     func saveGatewayAddress(_ address: String) async throws {
         guard !isNavigationActive, !isUpdatingGateway else {
             throw GatewaySettingsError.navigationActive
@@ -137,8 +163,8 @@ final class AppModel: ObservableObject {
         defer { isUpdatingGateway = false }
         clearDestination()
         await surroundingMap.changeGateway(to: url)
-        liveRouteProvider = AmapGatewayRouteProvider(baseURL: url)
-        placeProvider = AmapGatewayPlaceProvider(baseURL: url)
+        liveRouteProvider = Self.makeLiveRouteProvider(baseURL: url)
+        placeProvider = Self.makePlaceProvider(baseURL: url)
         mapGatewayBaseURL = url
         try GatewayConfiguration.save(url.absoluteString)
     }
@@ -304,7 +330,7 @@ final class AppModel: ObservableObject {
     }
 
     func startNavigation() {
-        guard !isUpdatingGateway, isGatewayConfigured else {
+        guard !isUpdatingGateway, isNavigationServiceConfigured else {
             navigationFailure = "请先在网关设置中填写服务地址"
             return
         }
@@ -381,6 +407,7 @@ final class AppModel: ObservableObject {
         isNavigationActive = false
         isDemoActive = false
         navigationFailure = nil
+        voiceAnnouncer.reset()
         surroundingMap.reset()
         // Ending navigation used to leave selectedPlace set, so the app stuck
         // on route preview with no obvious way back to the home/search screen.
@@ -396,7 +423,7 @@ final class AppModel: ObservableObject {
 
     func planRoutePreview() {
         guard !isNavigationActive, !isUpdatingGateway, selectedPlace != nil else { return }
-        guard isGatewayConfigured else {
+        guard isNavigationServiceConfigured else {
             failRoutePreview("请先在网关设置中填写服务地址")
             return
         }
@@ -433,6 +460,7 @@ final class AppModel: ObservableObject {
     private func bind(_ runtime: SharedNavigationRuntime) {
         runtime.onSnapshot = { [weak self] snapshot in
             self?.navigation = snapshot
+            self?.voiceAnnouncer.observe(snapshot)
             if snapshot.stateName == "navigating" || snapshot.stateName == "arrived" {
                 self?.navigationFailure = nil
             }
@@ -533,7 +561,7 @@ final class AppModel: ObservableObject {
         placeSearchTask?.cancel()
         placeSearchFailure = nil
 
-        guard !isUpdatingGateway, isGatewayConfigured else {
+        guard !isUpdatingGateway, isNavigationServiceConfigured else {
             placeResults = []
             isSearchingPlaces = false
             if query.count >= 2 { placeSearchFailure = "请先在网关设置中填写服务地址" }
