@@ -60,7 +60,7 @@ targets:
           - bluetooth-central
         MOTOGPSGatewayBaseURL: https://example.invalid/moto-gps/api/
         # AMap iOS SDK key. Empty = fall back to the self-hosted gateway.
-        MOTOGPSAMapKey: ""
+        MOTOGPSAMapKey: "b7905be03d81710699b79019c8af4d67"
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         UIApplicationSceneManifest:

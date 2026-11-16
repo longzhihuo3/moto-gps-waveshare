@@ -44,17 +44,13 @@ enum AmapNaviKitBootstrap {
 /// works without the self-hosted gateway. The shared C++ NavCore still owns
 /// maneuver progression; this provider only supplies the RoutePlan.
 ///
-/// The AMapNaviKit route managers are process-wide singletons and their
-/// planning callback carries no request identity, so plans are serialized
-/// through one FIFO queue.
+/// AMapNaviKit v11 route managers are process-wide singletons and their
+/// callbacks carry no request identity, so plans are serialized through one
+/// FIFO queue with a timeout.
 final class AmapNaviKitRouteProvider: NSObject, NavigationRouteProviding, NavigationRouteOptionsProviding, @unchecked Sendable {
     enum TravelMode: String {
         case riding
         case walking
-
-        /// Cruising speed used to estimate route duration when the SDK does
-        /// not expose a per-route duration for ride/walk planning.
-        var speedMPS: Double { self == .riding ? 4.2 : 1.25 }
     }
 
     private let travelMode: TravelMode
@@ -117,8 +113,8 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
 
             // The SDK callback normally arrives within a few seconds; never
             // leave a rider staring at "正在规划路线" forever.
-            DispatchQueue.global().asyncAfter(deadline: .now() + 15) { [weak self] in
-                self?.failPending(ifOlderThan: mode, error: AmapNaviKitError.timedOut)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 20) { [weak self] in
+                self?.failOldestPending(error: AmapNaviKitError.timedOut)
             }
 
             let originGCJ = GCJ02CoordinateMath.wgs84ToGCJ02(
@@ -142,112 +138,136 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
             if mode == .riding {
                 let manager = AMapNaviRideManager.sharedInstance()
                 manager.delegate = self
-                accepted = manager.calculateRoute(withStart: start, wayPoints: nil, end: end)
+                accepted = manager.calculateRideRoute(withStartPoint: start, endPoint: end)
             } else {
                 let manager = AMapNaviWalkManager.sharedInstance()
                 manager.delegate = self
-                accepted = manager.calculateRoute(withStart: start, wayPoints: nil, end: end)
+                accepted = manager.calculateWalkRoute(withStartPoints: [start], endPoints: [end])
             }
             if !accepted {
-                failPending(ifOlderThan: mode, error: AmapNaviKitError.rejected("路线规划未能发起，请稍后重试"))
+                failOldestPending(error: AmapNaviKitError.rejected("路线规划未能发起，请稍后重试"))
             }
         }
     }
 
-    func rideManager(_ rideManager: AMapNaviRideManager, onCalculateRouteFinished route: AMapNaviRoute?, withError error: Error?) {
-        handleFinished(route: route, error: error)
+    func rideManagerOnCalculateRouteSuccess(
+        _ rideManager: AMapNaviRideManager,
+        calculateRouteResult: AMapNaviCalculateRouteResult
+    ) {
+        finishWithRoutes(from: rideManager)
     }
 
-    func walkManager(_ walkManager: AMapNaviWalkManager, onCalculateRouteFinished route: AMapNaviRoute?, withError error: Error?) {
-        handleFinished(route: route, error: error)
+    func rideManager(_ rideManager: AMapNaviRideManager, onCalculateRouteFailure error: Error) {
+        finishWithFailure(error)
     }
 
-    private func handleFinished(route: AMapNaviRoute?, error: Error?) {
+    func walkManagerOnCalculateRouteSuccess(
+        _ walkManager: AMapNaviWalkManager,
+        calculateRouteResult: AMapNaviCalculateRouteResult
+    ) {
+        finishWithRoutes(from: walkManager)
+    }
+
+    func walkManager(_ walkManager: AMapNaviWalkManager, onCalculateRouteFailure error: Error) {
+        finishWithFailure(error)
+    }
+
+    private func finishWithRoutes(from manager: AMapNaviRideManager) {
         lock.lock()
         let pending = pendingQueue.isEmpty ? nil : pendingQueue.removeFirst()
         lock.unlock()
         guard let pending else { return }
 
-        if let error {
-            pending.continuation.resume(throwing: AmapNaviKitError.rejected(error.localizedDescription))
-            return
-        }
-        guard let route, let plan = Self.convert(route, mode: pending.mode) else {
+        let routeIDs = manager.naviRouteIDs ?? []
+        let routesByID = manager.naviRoutes ?? [:]
+        let orderedRoutes = routeIDs.compactMap { routesByID[$0] }
+        let plans = orderedRoutes.compactMap { Self.convert($0, mode: pending.mode) }
+        guard !plans.isEmpty else {
             pending.continuation.resume(throwing: AmapNaviKitError.noRoute)
             return
         }
-        pending.continuation.resume(returning: [plan])
+        pending.continuation.resume(returning: Array(plans.prefix(3)))
     }
 
-    private func failPending(ifOlderThan mode: AmapNaviKitRouteProvider.TravelMode, error: AmapNaviKitError) {
+    private func finishWithRoutes(from manager: AMapNaviWalkManager) {
         lock.lock()
-        guard let index = pendingQueue.firstIndex(where: { $0.mode == mode }) else {
+        let pending = pendingQueue.isEmpty ? nil : pendingQueue.removeFirst()
+        lock.unlock()
+        guard let pending else { return }
+
+        let routeIDs = manager.naviRouteIDs ?? []
+        let routesByID = manager.naviRoutes ?? [:]
+        let orderedRoutes = routeIDs.compactMap { routesByID[$0] }
+        let plans = orderedRoutes.compactMap { Self.convert($0, mode: pending.mode) }
+        guard !plans.isEmpty else {
+            pending.continuation.resume(throwing: AmapNaviKitError.noRoute)
+            return
+        }
+        pending.continuation.resume(returning: Array(plans.prefix(3)))
+    }
+
+    private func finishWithFailure(_ error: Error) {
+        lock.lock()
+        let pending = pendingQueue.isEmpty ? nil : pendingQueue.removeFirst()
+        lock.unlock()
+        pending?.continuation.resume(throwing: AmapNaviKitError.rejected(error.localizedDescription))
+    }
+
+    private func failOldestPending(error: AmapNaviKitError) {
+        lock.lock()
+        guard !pendingQueue.isEmpty else {
             lock.unlock()
             return
         }
-        let pending = pendingQueue.remove(at: index)
+        let pending = pendingQueue.removeFirst()
         lock.unlock()
         pending.continuation.resume(throwing: error)
     }
 
     private static func convert(_ route: AMapNaviRoute, mode: AmapNaviKitRouteProvider.TravelMode) -> RoutePlan? {
-        var polyline: [GCJ02Point] = []
+        let polyline = (route.routeCoordinates ?? []).map {
+            GCJ02Point(longitudeDeg: Double($0.longitude), latitudeDeg: Double($0.latitude))
+        }
+        guard polyline.count >= 2, route.routeLength > 0 else { return nil }
+
         var maneuvers: [RouteManeuver] = []
         var offsetM: Double = 0
-        var previous: GCJ02Point?
-
-        for (index, step) in (route.steps ?? []).enumerated() {
-            let stepCoordinates = (step.coordinates ?? []).map {
-                GCJ02Point(longitudeDeg: Double($0.longitude), latitudeDeg: Double($0.latitude))
-            }
-            if let first = stepCoordinates.first, let previous {
-                offsetM += GCJ02CoordinateMath.distanceM(
-                    fromLongitude: previous.longitudeDeg,
-                    fromLatitude: previous.latitudeDeg,
-                    toLongitude: first.longitudeDeg,
-                    toLatitude: first.latitudeDeg
+        var maneuverID: UInt32 = 0
+        for segment in route.routeSegments ?? [] {
+            let icon = segment.iconType
+            if isRealManeuver(icon), let first = segment.coordinates?.first {
+                maneuverID += 1
+                maneuvers.append(
+                    RouteManeuver(
+                        id: maneuverID,
+                        type: maneuverType(from: icon),
+                        routeOffsetM: Double(offsetM),
+                        roadName: roadName(of: segment),
+                        instruction: Self.instructionText(icon: icon)
+                    )
                 )
             }
-            let maneuver = RouteManeuver(
-                id: UInt32(index + 1),
-                type: maneuverType(from: step.action),
-                routeOffsetM: offsetM,
-                roadName: step.roadName ?? "",
-                instruction: Self.instructionText(action: step.action, roadName: step.roadName)
-            )
-            maneuvers.append(maneuver)
-            for coordinate in stepCoordinates {
-                if let last = polyline.last,
-                   abs(last.longitudeDeg - coordinate.longitudeDeg) < 1e-7,
-                   abs(last.latitudeDeg - coordinate.latitudeDeg) < 1e-7
-                {
-                    continue
-                }
-                polyline.append(coordinate)
-            }
-            previous = stepCoordinates.last
+            offsetM += Double(segment.length)
         }
-
-        guard polyline.count >= 2 else { return nil }
-
-        var totalDistanceM = 0.0
-        for index in 1 ..< polyline.count {
-            totalDistanceM += GCJ02CoordinateMath.distanceM(
-                fromLongitude: polyline[index - 1].longitudeDeg,
-                fromLatitude: polyline[index - 1].latitudeDeg,
-                toLongitude: polyline[index].longitudeDeg,
-                toLatitude: polyline[index].latitudeDeg
+        // NavCore needs a terminal maneuver so the watch can render arrival.
+        maneuverID += 1
+        maneuvers.append(
+            RouteManeuver(
+                id: maneuverID,
+                type: .arrive,
+                routeOffsetM: route.routeLength,
+                roadName: "",
+                instruction: "到达目的地"
             )
-        }
-        guard totalDistanceM > 0 else { return nil }
+        )
 
         let generatedAtMs = UInt64(Date().timeIntervalSince1970 * 1_000)
         return RoutePlan(
-            routeID: "navikit-\(Int(totalDistanceM.rounded()))-\(generatedAtMs)",
+            routeID: "navikit-\(route.routeLength)-\(generatedAtMs)-\(maneuvers.count)",
             provider: "amap-navikit",
             generatedAtMs: generatedAtMs,
-            totalDistanceM: totalDistanceM,
-            totalDurationS: max(1, Int((totalDistanceM / mode.speedMPS).rounded())),
+            totalDistanceM: Double(route.routeLength),
+            totalDurationS: max(1, route.routeTime),
             polyline: polyline,
             maneuvers: maneuvers,
             traffic: [],
@@ -255,36 +275,63 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         )
     }
 
-    private static func maneuverType(from action: AMapNaviAction) -> ManeuverType {
-        switch action {
+    private static func roadName(of segment: AMapNaviSegment) -> String {
+        (segment.links ?? []).compactMap { $0.roadName }.first { !$0.isEmpty } ?? ""
+    }
+
+    private static func isRealManeuver(_ icon: AMapNaviIconType) -> Bool {
+        switch icon {
+        case .left, .right, .leftFront, .rightFront, .leftBack, .rightBack,
+             .leftAndAround, .uTurnRight, .enterRoundabout, .outRoundabout,
+             .entryRingLeft, .entryRingRight, .entryRingContinue, .entryRingUTurn,
+             .entryLeftRingLeft, .entryLeftRingRight, .entryLeftRingContinue,
+             .entryLeftRingUTurn, .entryLeftRing, .leaveLeftRing,
+             .arrivedDestination, .mergeLeft, .mergeRight,
+             .turnLeftDiagonal, .turnRightDiagonal, .turnLeftAcross, .turnRightAcross,
+             .acrossTurnLeft, .acrossTurnRight:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private static func maneuverType(from icon: AMapNaviIconType) -> ManeuverType {
+        switch icon {
         case .left: .left
         case .right: .right
-        case .slightLeft: .slightLeft
-        case .slightRight: .slightRight
-        case .sharpLeft: .sharpLeft
-        case .sharpRight: .sharpRight
-        case .uTurn: .uTurnLeft
-        case .enterRoundabout: .roundabout
-        case .exitRoundabout: .exit
+        case .leftFront: .slightLeft
+        case .rightFront: .slightRight
+        case .leftBack: .sharpLeft
+        case .rightBack: .sharpRight
+        case .leftAndAround, .uTurnRight: .uTurnLeft
+        case .enterRoundabout, .entryRingLeft, .entryRingRight, .entryRingContinue,
+             .entryRingUTurn, .entryLeftRingLeft, .entryLeftRingRight,
+             .entryLeftRingContinue, .entryLeftRingUTurn, .entryLeftRing:
+            .roundabout
+        case .outRoundabout, .leaveLeftRing: .exit
+        case .arrivedDestination: .arrive
         default: .continue
         }
     }
 
-    private static func instructionText(action: AMapNaviAction, roadName: String?) -> String {
-        let phrase: String
-        switch action {
-        case .left: phrase = "左转"
-        case .right: phrase = "右转"
-        case .slightLeft: phrase = "向左前方行驶"
-        case .slightRight: phrase = "向右前方行驶"
-        case .sharpLeft: phrase = "向左后方急转"
-        case .sharpRight: phrase = "向右后方急转"
-        case .uTurn: phrase = "掉头"
-        case .enterRoundabout: phrase = "进入环岛"
-        case .exitRoundabout: phrase = "驶出环岛"
-        default: phrase = "直行"
+    private static func instructionText(icon: AMapNaviIconType) -> String {
+        switch icon {
+        case .left: "左转"
+        case .right: "右转"
+        case .leftFront: "向左前方行驶"
+        case .rightFront: "向右前方行驶"
+        case .leftBack: "向左后方急转"
+        case .rightBack: "向右后方急转"
+        case .leftAndAround, .uTurnRight: "掉头"
+        case .enterRoundabout, .entryRingLeft, .entryRingRight, .entryRingContinue,
+             .entryRingUTurn, .entryLeftRingLeft, .entryLeftRingRight,
+             .entryLeftRingContinue, .entryLeftRingUTurn, .entryLeftRing:
+            "进入环岛"
+        case .outRoundabout, .leaveLeftRing: "驶出环岛"
+        case .arrivedDestination: "到达目的地"
+        case .mergeLeft: "靠左行驶"
+        case .mergeRight: "靠右行驶"
+        default: "直行"
         }
-        guard let roadName, !roadName.isEmpty else { return phrase }
-        return "\(phrase)进入\(roadName)"
     }
 }
