@@ -144,7 +144,7 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
             } else {
                 let manager = AMapNaviWalkManager.sharedInstance()
                 manager.delegate = self
-                accepted = manager.calculateWalkRoute(withStartPoints: [start], endPoints: [end])
+                accepted = manager.calculateWalkRoute(withStart: start, end: end)
             }
             if !accepted {
                 failOldestPending(error: AmapNaviKitError.rejected("路线规划未能发起，请稍后重试"))
