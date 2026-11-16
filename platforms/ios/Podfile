@@ -8,6 +8,16 @@ target 'MotoGPS' do
 
   pod 'AMapNavi', '11.3.100'
   pod 'AMapSearch', '9.8.1'
+
+  # Test targets host the app: they only need the pod frameworks on the
+  # module/search path, not their own link copies.
+  target 'MotoGPSUnitTests' do
+    inherit! :search_paths
+  end
+
+  target 'MotoGPSUITests' do
+    inherit! :search_paths
+  end
 end
 
 post_install do |installer|
