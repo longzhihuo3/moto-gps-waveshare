@@ -53,7 +53,7 @@ final class VoiceAnnouncer {
             lastAnnouncedManeuverID = maneuverID
             announcedNearManeuverID = nil
             speak(
-                "前方\(Self.distanceText(snapshot.distanceToManeuverM))，\(Self.promptText(snapshot))"
+                "前方\(Self.distanceText(snapshot.distanceToManeuverM))，\(promptText(snapshot))"
             )
             return
         }
@@ -62,7 +62,7 @@ final class VoiceAnnouncer {
            snapshot.distanceToManeuverM <= Self.nearThresholdM
         {
             announcedNearManeuverID = maneuverID
-            speak("还有\(Self.distanceText(snapshot.distanceToManeuverM))，\(Self.promptText(snapshot))")
+            speak("还有\(Self.distanceText(snapshot.distanceToManeuverM))，\(promptText(snapshot))")
         }
     }
 
