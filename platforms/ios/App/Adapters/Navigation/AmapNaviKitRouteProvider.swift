@@ -31,6 +31,15 @@ enum AmapNaviKitBootstrap {
     static func install(apiKey: String) {
         let trimmed = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, !installed else { return }
+
+        // Privacy compliance must be acknowledged before ANY AMap SDK API
+        // works; without it AMapServices.shared() returns nil and every
+        // request is rejected by the SDK.
+        AMapSearchAPI.updatePrivacyShow(.didShow, privacyInfo: .didContain)
+        AMapSearchAPI.updatePrivacyAgree(.didAgree)
+        AMapNaviManagerConfig.sharedConfig().updatePrivacyShow(.didShow, privacyInfo: .didContain)
+        AMapNaviManagerConfig.sharedConfig().updatePrivacyAgree(.didAgree)
+
         guard let services = AMapServices.shared() else { return }
         services.apiKey = trimmed
         services.enableHTTPS = true
