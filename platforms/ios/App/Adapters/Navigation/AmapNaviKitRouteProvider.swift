@@ -1,5 +1,6 @@
 import Foundation
 import AMapNaviKit
+import AMapSearchKit
 import MotoNavigationCore
 
 enum AmapNaviKitError: LocalizedError {
@@ -37,8 +38,8 @@ enum AmapNaviKitBootstrap {
         // request is rejected by the SDK.
         AMapSearchAPI.updatePrivacyShow(.didShow, privacyInfo: .didContain)
         AMapSearchAPI.updatePrivacyAgree(.didAgree)
-        AMapNaviManagerConfig.sharedConfig().updatePrivacyShow(.didShow, privacyInfo: .didContain)
-        AMapNaviManagerConfig.sharedConfig().updatePrivacyAgree(.didAgree)
+        AMapNaviManagerConfig.shared().updatePrivacyShow(.didShow, privacyInfo: .didContain)
+        AMapNaviManagerConfig.shared().updatePrivacyAgree(.didAgree)
 
         guard let services = AMapServices.shared() else { return }
         services.apiKey = trimmed
