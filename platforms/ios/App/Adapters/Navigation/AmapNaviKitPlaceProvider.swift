@@ -58,9 +58,17 @@ private final class POISearchSession {
 
     private let requestObject: AMapPOISearchBaseRequest
     private let continuation: CheckedContinuation<[PlaceSearchResult], Error>
+    // Strong reference: the AMapSearchAPI must stay alive until the request
+    // completes, otherwise ARC tears down the in-flight request.
+    private var api: AMapSearchAPI?
 
-    private init(request: AMapPOISearchBaseRequest, continuation: CheckedContinuation<[PlaceSearchResult], Error>) {
+    private init(
+        request: AMapPOISearchBaseRequest,
+        api: AMapSearchAPI,
+        continuation: CheckedContinuation<[PlaceSearchResult], Error>
+    ) {
         requestObject = request
+        self.api = api
         self.continuation = continuation
     }
 
@@ -69,7 +77,7 @@ private final class POISearchSession {
         api: AMapSearchAPI,
         continuation: CheckedContinuation<[PlaceSearchResult], Error>
     ) {
-        let session = POISearchSession(request: request, continuation: continuation)
+        let session = POISearchSession(request: request, api: api, continuation: continuation)
         lock.lock()
         activeSessions[ObjectIdentifier(request)] = session
         lock.unlock()
@@ -95,7 +103,9 @@ private final class POISearchSession {
         guard let keywordsRequest = request as? AMapPOISearchBaseRequest else { return nil }
         lock.lock()
         defer { lock.unlock() }
-        return activeSessions.removeValue(forKey: ObjectIdentifier(keywordsRequest))
+        let session = activeSessions.removeValue(forKey: ObjectIdentifier(keywordsRequest))
+        session?.api = nil  // release the search API once the request is done
+        return session
     }
 
     private static func convert(_ poi: AMapPOI) -> PlaceSearchResult? {

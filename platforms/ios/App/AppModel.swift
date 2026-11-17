@@ -524,7 +524,7 @@ final class AppModel: ObservableObject {
                 return
             } catch {
                 guard let self, !Task.isCancelled else { return }
-                self.failRoutePreview("路线规划失败，请检查网络后重试")
+                self.failRoutePreview("规划失败：\(error.localizedDescription)")
             }
         }
     }
@@ -607,7 +607,7 @@ final class AppModel: ObservableObject {
                 guard let self, !Task.isCancelled else { return }
                 self.placeResults = []
                 self.isSearchingPlaces = false
-                self.placeSearchFailure = "地点搜索失败，请检查网络后重试"
+                self.placeSearchFailure = "搜索失败：\(error.localizedDescription)"
             }
         }
     }

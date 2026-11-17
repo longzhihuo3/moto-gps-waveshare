@@ -71,7 +71,7 @@ struct ContentView: View {
 
     private var homeScreen: some View {
         List {
-            if !model.isGatewayConfigured {
+            if !model.isNavigationServiceConfigured {
                 Section {
                     Button { showsGatewaySettings = true } label: {
                         Label("设置导航网关", systemImage: "network")
