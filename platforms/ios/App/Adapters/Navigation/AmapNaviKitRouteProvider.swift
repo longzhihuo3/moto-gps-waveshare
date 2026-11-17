@@ -97,7 +97,7 @@ final class AmapNaviKitRouteProvider: NSObject, NavigationRouteProviding, Naviga
 
 /// Serializes AMapNaviKit route planning. One pending plan at a time with a
 /// timeout, because the delegate callback cannot be matched to a request.
-private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDelegate, AMapNaviWalkManagerDelegate, @unchecked Sendable {
+private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDelegate, AMapNaviWalkManagerDelegate, AMapNaviLoggerProtocol, @unchecked Sendable {
     static let shared = AmapNaviKitPlanningSession()
 
     private struct Pending {
@@ -107,6 +107,40 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
 
     private let lock = NSLock()
     private var pendingQueue: [Pending] = []
+    private var sdkLogTail: [String] = []
+
+    private override init() {
+        super.init()
+        AMapNaviLogger.shareInstance().setLogDelegate(self)
+        Self.installGlobalLogSink()
+    }
+
+    /// Full-link log hook: SDK recommends registering it once at startup;
+    /// route everything into the same tail buffer for diagnostics.
+    private static func installGlobalLogSink() {
+        AMapNaviLogger.setFullLinkLogBlock { content in
+            AmapNaviKitPlanningSession.shared.appendSdkLog("[link] \(content)")
+        }
+    }
+
+    fileprivate func appendSdkLog(_ line: String) {
+        let trimmed = line.count > 240 ? String(line.suffix(240)) : line
+        lock.lock()
+        sdkLogTail.append(trimmed)
+        if sdkLogTail.count > 24 { sdkLogTail.removeFirst(sdkLogTail.count - 24) }
+        lock.unlock()
+    }
+
+    func onNaviLog(_ logLevel: AMapNaviLogLevel, logContent: String) {
+        appendSdkLog("[\(logLevel.rawValue)] \(logContent)")
+    }
+
+    private func sdkLogSummary() -> String {
+        lock.lock()
+        defer { lock.unlock() }
+        guard !sdkLogTail.isEmpty else { return "（SDK无日志）" }
+        return "｜SDK日志：" + sdkLogTail.suffix(6).joined(separator: " ␤ ")
+    }
 
     func calculateRoute(
         mode: AmapNaviKitRouteProvider.TravelMode,
@@ -120,11 +154,12 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
             lock.lock()
             pendingQueue.append(Pending(mode: mode, continuation: continuation))
             lock.unlock()
+            appendSdkLog("[app] begin mode=\(mode.rawValue) \(originWGS84.longitudeDeg),\(originWGS84.latitudeDeg)->\(destinationWGS84.longitudeDeg),\(destinationWGS84.latitudeDeg)")
 
             // The SDK callback normally arrives within a few seconds; never
             // leave a rider staring at "正在规划路线" forever.
-            DispatchQueue.global().asyncAfter(deadline: .now() + 20) { [weak self] in
-                self?.failOldestPending(error: AmapNaviKitError.timedOut)
+            DispatchQueue.global().asyncAfter(deadline: .now() + 45) { [weak self] in
+                self?.failOldestPendingWithDiagnostics(AmapNaviKitError.timedOut)
             }
 
             let startGCJ = GCJ02CoordinateMath.wgs84ToGCJ02(
@@ -157,7 +192,7 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
                 accepted = manager.calculateWalkRoute(withStart: [start], end: [end])
             }
             if !accepted {
-                failOldestPending(error: AmapNaviKitError.rejected("路线规划未能发起，请稍后重试"))
+                failOldestPendingWithDiagnostics(AmapNaviKitError.rejected("路线规划未能发起，请稍后重试"))
             }
         }
     }
@@ -214,7 +249,9 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         lock.lock()
         let pending = pendingQueue.isEmpty ? nil : pendingQueue.removeFirst()
         lock.unlock()
-        pending?.continuation.resume(throwing: AmapNaviKitError.rejected(error.localizedDescription))
+        let nsError = error as NSError
+        let message = "\(error.localizedDescription)（code \(nsError.code)，\(nsError.domain)）"
+        pending?.continuation.resume(throwing: AmapNaviKitError.rejected(message))
     }
 
     private func failOldestPending(error: AmapNaviKitError) {
@@ -226,6 +263,17 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         let pending = pendingQueue.removeFirst()
         lock.unlock()
         pending.continuation.resume(throwing: error)
+    }
+
+    private func failOldestPendingWithDiagnostics(_ base: AmapNaviKitError) {
+        lock.lock()
+        guard !pendingQueue.isEmpty else {
+            lock.unlock()
+            return
+        }
+        let pending = pendingQueue.removeFirst()
+        lock.unlock()
+        pending.continuation.resume(throwing: AmapNaviKitError.rejected(base.localizedDescription + sdkLogSummary()))
     }
 
     private static func convert(_ route: AMapNaviRoute, mode: AmapNaviKitRouteProvider.TravelMode) -> RoutePlan? {
