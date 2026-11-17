@@ -607,7 +607,15 @@ final class AppModel: ObservableObject {
                 guard let self, !Task.isCancelled else { return }
                 self.placeResults = []
                 self.isSearchingPlaces = false
-                self.placeSearchFailure = "搜索失败：\(error.localizedDescription)"
+                var message = "搜索失败：\(error.localizedDescription)"
+                if message.contains("INVALID_USER_SCODE") {
+                    // SideStore/AltStore rewrites the bundle identifier on
+                    // signing; surface the one AMap actually validates so the
+                    // user can bind it in the AMap console.
+                    let bundleID = Bundle.main.bundleIdentifier ?? "unknown"
+                    message += "（本机 Bundle ID：\(bundleID)，请在高德控制台把 Key 绑定到它）"
+                }
+                self.placeSearchFailure = message
             }
         }
     }
