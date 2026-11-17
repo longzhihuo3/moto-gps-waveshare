@@ -201,16 +201,18 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         }
     }
 
-    /// v11 renamed the success callbacks: the selector is
-    /// rideManagerOnCalculateRouteSuccess:calculateRouteResult: (one continuous
-    /// keyword chain), NOT rideManager:onCalculateRouteSuccess:. Implementing
-    /// the old-format name compiles fine but is never invoked by the SDK.
-    func rideManagerOnCalculateRouteSuccess(_ rideManager: AMapNaviRideManager) {
+    /// v11 renamed the success callbacks: the ObjC selector is
+    /// rideManagerOnCalculateRouteSuccess:calculateRouteResult:. The clang
+    /// importer splits it into Swift rideManager(onCalculateRouteSuccess:),
+    /// where the first (manager) argument carries the onCalculateRouteSuccess
+    /// label. The old-format rideManager(_:onCalculateRouteSuccess:) maps to a
+    /// selector that no longer exists and is never invoked by the SDK.
+    func rideManager(onCalculateRouteSuccess rideManager: AMapNaviRideManager) {
         finishWithRoutes(from: rideManager)
     }
 
-    func rideManagerOnCalculateRouteSuccess(
-        _ rideManager: AMapNaviRideManager,
+    func rideManager(
+        onCalculateRouteSuccess rideManager: AMapNaviRideManager,
         calculateRouteResult: AMapNaviCalculateRouteResult
     ) {
         finishWithRoutes(from: rideManager)
@@ -228,12 +230,12 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         finishWithFailure(error)
     }
 
-    func walkManagerOnCalculateRouteSuccess(_ walkManager: AMapNaviWalkManager) {
+    func walkManager(onCalculateRouteSuccess walkManager: AMapNaviWalkManager) {
         finishWithRoutes(from: walkManager)
     }
 
-    func walkManagerOnCalculateRouteSuccess(
-        _ walkManager: AMapNaviWalkManager,
+    func walkManager(
+        onCalculateRouteSuccess walkManager: AMapNaviWalkManager,
         calculateRouteResult: AMapNaviCalculateRouteResult
     ) {
         finishWithRoutes(from: walkManager)
