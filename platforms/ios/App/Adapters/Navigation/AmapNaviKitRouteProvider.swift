@@ -95,12 +95,17 @@ final class AmapNaviKitRouteProvider: NSObject, NavigationRouteProviding, Naviga
     }
 }
 
-/// Serializes AMapNaviKit route planning. One pending plan at a time with a
-/// timeout, because the delegate callback cannot be matched to a request.
+/// Serializes AMapNaviKit route planning with a per-request timeout.
+/// Ride/walk managers are process-wide singletons whose callbacks carry no
+/// request identity, so every pending request gets its own UUID; timeouts
+/// cancel by identity and callbacks match by travel mode instead of queue
+/// position, so a stale timer can never kill a healthy request or misdeliver
+/// another request's result.
 private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDelegate, AMapNaviWalkManagerDelegate, @unchecked Sendable {
     static let shared = AmapNaviKitPlanningSession()
 
     private struct Pending {
+        let id: UUID
         let mode: AmapNaviKitRouteProvider.TravelMode
         let continuation: CheckedContinuation<[RoutePlan], Error>
     }
@@ -155,15 +160,17 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
             throw AmapNaviKitError.sdkUnavailable
         }
         return try await withCheckedThrowingContinuation { continuation in
+            let requestID = UUID()
             lock.lock()
-            pendingQueue.append(Pending(mode: mode, continuation: continuation))
+            pendingQueue.append(Pending(id: requestID, mode: mode, continuation: continuation))
             lock.unlock()
-            appendSdkLog("[app] begin mode=\(mode.rawValue) \(originWGS84.longitudeDeg),\(originWGS84.latitudeDeg)->\(destinationWGS84.longitudeDeg),\(destinationWGS84.latitudeDeg)")
+            appendSdkLog("[app] begin id=\(requestID.uuidString.prefix(8)) mode=\(mode.rawValue) \(originWGS84.longitudeDeg),\(originWGS84.latitudeDeg)->\(destinationWGS84.longitudeDeg),\(destinationWGS84.latitudeDeg)")
 
             // The SDK callback normally arrives within a few seconds; never
-            // leave a rider staring at "正在规划路线" forever.
+            // leave a rider staring at "正在规划路线" forever. Cancels by request
+            // identity, not queue position.
             DispatchQueue.global().asyncAfter(deadline: .now() + 45) { [weak self] in
-                self?.failOldestPendingWithDiagnostics(AmapNaviKitError.timedOut)
+                self?.failPending(id: requestID, base: AmapNaviKitError.timedOut)
             }
 
             let startGCJ = GCJ02CoordinateMath.wgs84ToGCJ02(
@@ -181,7 +188,7 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
                 withLatitude: CGFloat(endGCJ.latitudeDeg),
                 longitude: CGFloat(endGCJ.longitudeDeg)
             ) else {
-                failOldestPending(error: AmapNaviKitError.rejected("坐标转换失败"))
+                failPending(id: requestID, base: AmapNaviKitError.rejected("坐标转换失败"))
                 return
             }
 
@@ -196,7 +203,7 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
                 accepted = manager.calculateWalkRoute(withStart: [start], end: [end])
             }
             if !accepted {
-                failOldestPendingWithDiagnostics(AmapNaviKitError.rejected("路线规划未能发起，请稍后重试"))
+                failPending(id: requestID, base: AmapNaviKitError.rejected("路线规划未能发起，请稍后重试"))
             }
         }
     }
@@ -208,18 +215,18 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
     /// label. The old-format rideManager(_:onCalculateRouteSuccess:) maps to a
     /// selector that no longer exists and is never invoked by the SDK.
     func rideManager(onCalculateRouteSuccess rideManager: AMapNaviRideManager) {
-        finishWithRoutes(from: rideManager)
+        finishWithRoutes(from: rideManager, mode: .riding)
     }
 
     func rideManager(
         onCalculateRouteSuccess rideManager: AMapNaviRideManager,
         calculateRouteResult: AMapNaviCalculateRouteResult
     ) {
-        finishWithRoutes(from: rideManager)
+        finishWithRoutes(from: rideManager, mode: .riding)
     }
 
     func rideManager(_ rideManager: AMapNaviRideManager, onCalculateRouteFailure error: Error) {
-        finishWithFailure(error)
+        finishWithFailure(error, mode: .riding)
     }
 
     func rideManager(
@@ -227,22 +234,22 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         onCalculateRouteFailure error: Error,
         calculateRouteResult: AMapNaviCalculateRouteResult
     ) {
-        finishWithFailure(error)
+        finishWithFailure(error, mode: .riding)
     }
 
     func walkManager(onCalculateRouteSuccess walkManager: AMapNaviWalkManager) {
-        finishWithRoutes(from: walkManager)
+        finishWithRoutes(from: walkManager, mode: .walking)
     }
 
     func walkManager(
         onCalculateRouteSuccess walkManager: AMapNaviWalkManager,
         calculateRouteResult: AMapNaviCalculateRouteResult
     ) {
-        finishWithRoutes(from: walkManager)
+        finishWithRoutes(from: walkManager, mode: .walking)
     }
 
     func walkManager(_ walkManager: AMapNaviWalkManager, onCalculateRouteFailure error: Error) {
-        finishWithFailure(error)
+        finishWithFailure(error, mode: .walking)
     }
 
     func walkManager(
@@ -250,27 +257,36 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         onCalculateRouteFailure error: Error,
         calculateRouteResult: AMapNaviCalculateRouteResult
     ) {
-        finishWithFailure(error)
+        finishWithFailure(error, mode: .walking)
     }
 
-    private func finishWithRoutes(from manager: AMapNaviRideManager) {
+    private func finishWithRoutes(from manager: AMapNaviRideManager, mode: AmapNaviKitRouteProvider.TravelMode) {
         appendSdkLog("[app] ride success routes=\(manager.naviRoutes().count)")
-        finishWithRoutes(routeIDs: manager.naviRouteIDs(), routesByID: manager.naviRoutes())
+        finishWithRoutes(routeIDs: manager.naviRouteIDs(), routesByID: manager.naviRoutes(), mode: mode)
     }
 
-    private func finishWithRoutes(from manager: AMapNaviWalkManager) {
+    private func finishWithRoutes(from manager: AMapNaviWalkManager, mode: AmapNaviKitRouteProvider.TravelMode) {
         appendSdkLog("[app] walk success routes=\(manager.naviRoutes().count)")
-        finishWithRoutes(routeIDs: manager.naviRouteIDs(), routesByID: manager.naviRoutes())
+        finishWithRoutes(routeIDs: manager.naviRouteIDs(), routesByID: manager.naviRoutes(), mode: mode)
+    }
+
+    /// Consume the oldest pending request of the given mode. The SDK callback
+    /// carries no request identity, so mode is the best available match; in
+    /// practice the app issues one mode at a time, but matching by mode still
+    /// prevents a stale callback from stealing another mode's result.
+    private func popFirstPending(mode: AmapNaviKitRouteProvider.TravelMode) -> Pending? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let index = pendingQueue.firstIndex(where: { $0.mode == mode }) else { return nil }
+        return pendingQueue.remove(at: index)
     }
 
     private func finishWithRoutes(
         routeIDs: [NSNumber],
-        routesByID: [NSNumber: AMapNaviRoute]
+        routesByID: [NSNumber: AMapNaviRoute],
+        mode: AmapNaviKitRouteProvider.TravelMode
     ) {
-        lock.lock()
-        let pending = pendingQueue.isEmpty ? nil : pendingQueue.removeFirst()
-        lock.unlock()
-        guard let pending else { return }
+        guard let pending = popFirstPending(mode: mode) else { return }
 
         let orderedRoutes = routeIDs.compactMap { routesByID[$0] }
         let plans = orderedRoutes.compactMap { Self.convert($0, mode: pending.mode) }
@@ -281,33 +297,22 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         pending.continuation.resume(returning: Array(plans.prefix(3)))
     }
 
-    private func finishWithFailure(_ error: Error) {
-        lock.lock()
-        let pending = pendingQueue.isEmpty ? nil : pendingQueue.removeFirst()
-        lock.unlock()
+    private func finishWithFailure(_ error: Error, mode: AmapNaviKitRouteProvider.TravelMode) {
+        guard let pending = popFirstPending(mode: mode) else { return }
         let nsError = error as NSError
         let message = "\(error.localizedDescription)（code \(nsError.code)，\(nsError.domain)）"
-        pending?.continuation.resume(throwing: AmapNaviKitError.rejected(message))
+        pending.continuation.resume(throwing: AmapNaviKitError.rejected(message))
     }
 
-    private func failOldestPending(error: AmapNaviKitError) {
+    /// Cancel the exact request that timed out (or failed pre-flight), never
+    /// whatever happens to sit at the queue head now.
+    private func failPending(id: UUID, base: AmapNaviKitError) {
         lock.lock()
-        guard !pendingQueue.isEmpty else {
+        guard let index = pendingQueue.firstIndex(where: { $0.id == id }) else {
             lock.unlock()
             return
         }
-        let pending = pendingQueue.removeFirst()
-        lock.unlock()
-        pending.continuation.resume(throwing: error)
-    }
-
-    private func failOldestPendingWithDiagnostics(_ base: AmapNaviKitError) {
-        lock.lock()
-        guard !pendingQueue.isEmpty else {
-            lock.unlock()
-            return
-        }
-        let pending = pendingQueue.removeFirst()
+        let pending = pendingQueue.remove(at: index)
         lock.unlock()
         pending.continuation.resume(throwing: AmapNaviKitError.rejected(base.localizedDescription + sdkLogSummary()))
     }
@@ -350,6 +355,11 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         )
 
         let generatedAtMs = UInt64(Date().timeIntervalSince1970 * 1_000)
+        // traffic / speedLimitKph stay empty on purpose: per AMapNaviKit v11
+        // headers, link trafficStatus is driving-only and the planning result
+        // carries no speed-limit field for riding/walking, so there is nothing
+        // to map. The iOS gateway path never filled them either (the OSM
+        // speed-limit pipe serves the Android phone app only).
         return RoutePlan(
             routeID: "navikit-\(route.routeLength)-\(generatedAtMs)-\(maneuvers.count)",
             provider: "amap-navikit",
