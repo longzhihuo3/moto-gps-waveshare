@@ -201,9 +201,17 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         }
     }
 
-    func rideManager(
+    /// v11 renamed the success callbacks: the selector is
+    /// rideManagerOnCalculateRouteSuccess:calculateRouteResult: (one continuous
+    /// keyword chain), NOT rideManager:onCalculateRouteSuccess:. Implementing
+    /// the old-format name compiles fine but is never invoked by the SDK.
+    func rideManagerOnCalculateRouteSuccess(_ rideManager: AMapNaviRideManager) {
+        finishWithRoutes(from: rideManager)
+    }
+
+    func rideManagerOnCalculateRouteSuccess(
         _ rideManager: AMapNaviRideManager,
-        onCalculateRouteSuccess calculateRouteResult: AMapNaviCalculateRouteResult
+        calculateRouteResult: AMapNaviCalculateRouteResult
     ) {
         finishWithRoutes(from: rideManager)
     }
@@ -212,9 +220,21 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         finishWithFailure(error)
     }
 
-    func walkManager(
+    func rideManager(
+        _ rideManager: AMapNaviRideManager,
+        onCalculateRouteFailure error: Error,
+        calculateRouteResult: AMapNaviCalculateRouteResult
+    ) {
+        finishWithFailure(error)
+    }
+
+    func walkManagerOnCalculateRouteSuccess(_ walkManager: AMapNaviWalkManager) {
+        finishWithRoutes(from: walkManager)
+    }
+
+    func walkManagerOnCalculateRouteSuccess(
         _ walkManager: AMapNaviWalkManager,
-        onCalculateRouteSuccess calculateRouteResult: AMapNaviCalculateRouteResult
+        calculateRouteResult: AMapNaviCalculateRouteResult
     ) {
         finishWithRoutes(from: walkManager)
     }
@@ -223,11 +243,21 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         finishWithFailure(error)
     }
 
+    func walkManager(
+        _ walkManager: AMapNaviWalkManager,
+        onCalculateRouteFailure error: Error,
+        calculateRouteResult: AMapNaviCalculateRouteResult
+    ) {
+        finishWithFailure(error)
+    }
+
     private func finishWithRoutes(from manager: AMapNaviRideManager) {
+        appendSdkLog("[app] ride success routes=\(manager.naviRoutes().count)")
         finishWithRoutes(routeIDs: manager.naviRouteIDs(), routesByID: manager.naviRoutes())
     }
 
     private func finishWithRoutes(from manager: AMapNaviWalkManager) {
+        appendSdkLog("[app] walk success routes=\(manager.naviRoutes().count)")
         finishWithRoutes(routeIDs: manager.naviRouteIDs(), routesByID: manager.naviRoutes())
     }
 
