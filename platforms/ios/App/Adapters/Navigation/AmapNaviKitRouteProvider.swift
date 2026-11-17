@@ -118,8 +118,9 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
     /// see the type. The class still exists in the binary, so reach it through
     /// the Objective-C runtime.
     private static func installSdkLogDelegate(_ target: NSObject) {
-        guard let cls = NSClassFromString("AMapNaviLogger"),
-              let instance = cls.perform(NSSelectorFromString("shareInstance"))?.takeUnretainedValue()
+        guard let cls = NSClassFromString("AMapNaviLogger") as? NSObject.Type,
+              let instance = cls.perform(NSSelectorFromString("shareInstance"))?
+                  .takeUnretainedValue() as? NSObject
         else { return }
         instance.perform(NSSelectorFromString("setLogDelegate:"), with: target)
     }
