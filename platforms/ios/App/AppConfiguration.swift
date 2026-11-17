@@ -23,7 +23,13 @@ enum AppConfiguration {
     }
 
     static var amapKeyConfigured: Bool {
-        !amapKey.isEmpty
+        #if DEBUG
+        // UI 测试用：模拟「未配置 AMap Key」的旧行为，让网关设置入口可测。
+        if ProcessInfo.processInfo.arguments.contains("--moto-disable-amap") {
+            return false
+        }
+        #endif
+        return !amapKey.isEmpty
     }
 
     /// 步行/骑行模式。默认骑行（摩托车/骑行场景）；在 UserDefaults
