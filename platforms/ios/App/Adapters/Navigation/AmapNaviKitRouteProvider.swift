@@ -97,7 +97,7 @@ final class AmapNaviKitRouteProvider: NSObject, NavigationRouteProviding, Naviga
 
 /// Serializes AMapNaviKit route planning. One pending plan at a time with a
 /// timeout, because the delegate callback cannot be matched to a request.
-private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDelegate, AMapNaviWalkManagerDelegate, AMapNaviLoggerProtocol, @unchecked Sendable {
+private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDelegate, AMapNaviWalkManagerDelegate, @unchecked Sendable {
     static let shared = AmapNaviKitPlanningSession()
 
     private struct Pending {
@@ -111,16 +111,17 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
 
     private override init() {
         super.init()
-        AMapNaviLogger.shareInstance().setLogDelegate(self)
-        Self.installGlobalLogSink()
+        Self.installSdkLogDelegate(self)
     }
 
-    /// Full-link log hook: SDK recommends registering it once at startup;
-    /// route everything into the same tail buffer for diagnostics.
-    private static func installGlobalLogSink() {
-        AMapNaviLogger.setFullLinkLogBlock { content in
-            AmapNaviKitPlanningSession.shared.appendSdkLog("[link] \(content)")
-        }
+    /// AMapNaviLogger.h is not part of the SDK umbrella header, so Swift cannot
+    /// see the type. The class still exists in the binary, so reach it through
+    /// the Objective-C runtime.
+    private static func installSdkLogDelegate(_ target: NSObject) {
+        guard let cls = NSClassFromString("AMapNaviLogger"),
+              let instance = cls.perform(NSSelectorFromString("shareInstance"))?.takeUnretainedValue()
+        else { return }
+        instance.perform(NSSelectorFromString("setLogDelegate:"), with: target)
     }
 
     fileprivate func appendSdkLog(_ line: String) {
@@ -131,8 +132,10 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         lock.unlock()
     }
 
-    func onNaviLog(_ logLevel: AMapNaviLogLevel, logContent: String) {
-        appendSdkLog("[\(logLevel.rawValue)] \(logContent)")
+    /// Matches -[AMapNaviLoggerProtocol onNaviLog:logContent:]; declared @objc
+    /// because the formal protocol type is invisible to Swift.
+    @objc func onNaviLog(_ logLevel: Int, logContent: String) {
+        appendSdkLog("[\(logLevel)] \(logContent)")
     }
 
     private func sdkLogSummary() -> String {
