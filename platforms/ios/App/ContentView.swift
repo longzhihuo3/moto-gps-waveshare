@@ -81,6 +81,17 @@ struct ContentView: View {
                     Text("填写你部署的网关地址后，就可以搜索地点和规划路线。")
                 }
             }
+            Section {
+                Picker("出行方式", selection: $model.travelMode) {
+                    Text("自行车").tag(AmapNaviKitRouteProvider.TravelMode.riding)
+                    Text("摩托车").tag(AmapNaviKitRouteProvider.TravelMode.motorcycle)
+                    Text("步行").tag(AmapNaviKitRouteProvider.TravelMode.walking)
+                }
+                .pickerStyle(.segmented)
+                .accessibilityIdentifier("travel-mode-picker")
+            } footer: {
+                Text("摩托车按机动车路线规划，耗时与自行车不同；切换后下次规划立即生效。")
+            }
             Section { searchField }
             if !model.destinationQuery.isEmpty {
                 searchResultsSection
@@ -417,9 +428,14 @@ struct ContentView: View {
                             routeDistance(candidate)
                         }
                     }
-                    Label(candidate.trafficSummary, systemImage: "car.side")
+                    Label(candidate.trafficSummary, systemImage: model.travelModeSymbol)
                         .font(.subheadline)
                         .foregroundStyle(trafficTint(candidate))
+                    if let trafficLights = candidate.trafficLightText {
+                        Label(trafficLights, systemImage: "light.beacon.max")
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 Image(systemName: selected ? "checkmark.circle.fill" : "circle")
@@ -501,7 +517,7 @@ struct ContentView: View {
                 deviceSummaryButton
                 statusRow("手机定位", symbol: "location", value: locationStatus,
                           color: model.navigation.hasUsableFix ? .green : .secondary)
-                statusRow("路况", symbol: "car.side", value: trafficStatus, color: .secondary)
+                statusRow("路况", symbol: model.travelModeSymbol, value: trafficStatus, color: .secondary)
                 SurroundingMapStatusRow(store: model.surroundingMap)
                 Button("管理离线地图") { showsMapDownloads = true }
             }

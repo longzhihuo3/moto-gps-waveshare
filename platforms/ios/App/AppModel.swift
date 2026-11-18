@@ -11,6 +11,17 @@ final class AppModel: ObservableObject {
     @Published private(set) var isDemoActive = false
 
     @Published var destinationQuery = ""
+    /// 出行模式（自行车/摩托车/步行）。切换后保存并重建规划 Provider，
+    /// 下一次导航/路线预览即用新模式。
+    @Published var travelMode: AmapNaviKitRouteProvider.TravelMode = AppConfiguration.naviTravelMode {
+        didSet {
+            guard oldValue != travelMode else { return }
+            AppConfiguration.setTravelMode(travelMode)
+            if AppConfiguration.amapKeyConfigured {
+                liveRouteProvider = Self.makeLiveRouteProvider(baseURL: mapGatewayBaseURL)
+            }
+        }
+    }
     @Published private(set) var placeResults: [PlaceSearchResult] = []
     @Published private(set) var selectedPlace: PlaceSearchResult?
     @Published private(set) var recentPlaces: [PlaceSearchResult] = []
@@ -138,6 +149,22 @@ final class AppModel: ObservableObject {
     /// the surrounding-map scene. Navigation without the gateway is valid.
     var isNavigationServiceConfigured: Bool {
         isGatewayConfigured || AppConfiguration.amapKeyConfigured
+    }
+
+    var travelModeSymbol: String {
+        switch travelMode {
+        case .riding: return "bicycle"
+        case .motorcycle: return "motorcycle"
+        case .walking: return "figure.walk"
+        }
+    }
+
+    var travelModeTitle: String {
+        switch travelMode {
+        case .riding: return "自行车"
+        case .motorcycle: return "摩托车"
+        case .walking: return "步行"
+        }
     }
 
     private static func makeLiveRouteProvider(baseURL: URL) -> any NavigationRouteProviding & NavigationRouteOptionsProviding {

@@ -32,11 +32,16 @@ enum AppConfiguration {
         return !amapKey.isEmpty
     }
 
-    /// 步行/骑行模式。默认骑行（摩托车/骑行场景）；在 UserDefaults
-    /// `MotoGPS.travelMode` 写入 walking/riding 可切换（重启 App 生效）。
+    /// 出行模式：riding=自行车（非机动车路线）、motorcycle=摩托车（机动车
+    /// 路线）、walking=步行。默认 riding；持久化在 UserDefaults
+    /// `MotoGPS.travelMode`，首页切换即时生效并保存。
     static var naviTravelMode: AmapNaviKitRouteProvider.TravelMode {
         AmapNaviKitRouteProvider.TravelMode(
             rawValue: UserDefaults.standard.string(forKey: "MotoGPS.travelMode") ?? ""
         ) ?? .riding
+    }
+
+    static func setTravelMode(_ mode: AmapNaviKitRouteProvider.TravelMode) {
+        UserDefaults.standard.set(mode.rawValue, forKey: "MotoGPS.travelMode")
     }
 }

@@ -28,6 +28,11 @@ struct RoutePreviewCandidate: Identifiable, Equatable {
             : "\(minutes) 分钟"
     }
 
+    var trafficLightText: String? {
+        guard let count = route.trafficLightCount, count > 0 else { return nil }
+        return "沿途红绿灯 \(count) 个"
+    }
+
     var trafficSummary: String {
         guard !route.traffic.isEmpty, route.totalDistanceM > 0 else {
             return "暂无分段路况"

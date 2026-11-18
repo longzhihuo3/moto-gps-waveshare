@@ -61,6 +61,7 @@ final class AmapNaviKitRouteProvider: NSObject, NavigationRouteProviding, Naviga
     enum TravelMode: String {
         case riding
         case walking
+        case motorcycle
     }
 
     private let travelMode: TravelMode
@@ -96,23 +97,39 @@ final class AmapNaviKitRouteProvider: NSObject, NavigationRouteProviding, Naviga
 }
 
 /// Serializes AMapNaviKit route planning with a per-request timeout.
-/// Ride/walk managers are process-wide singletons whose callbacks carry no
-/// request identity, so every pending request gets its own UUID; timeouts
+/// Ride/walk/drive managers are process-wide singletons whose callbacks carry
+/// no request identity, so every pending request gets its own UUID; timeouts
 /// cancel by identity and callbacks match by travel mode instead of queue
 /// position, so a stale timer can never kill a healthy request or misdeliver
 /// another request's result.
-private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDelegate, AMapNaviWalkManagerDelegate, @unchecked Sendable {
+private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDelegate, AMapNaviWalkManagerDelegate, AMapNaviDriveManagerDelegate, @unchecked Sendable {
     static let shared = AmapNaviKitPlanningSession()
 
     private struct Pending {
         let id: UUID
         let mode: AmapNaviKitRouteProvider.TravelMode
+        let originWGS84: WGS84Point
+        let destinationWGS84: WGS84Point
+        let startedAt: ContinuousClock.Instant
         let continuation: CheckedContinuation<[RoutePlan], Error>
     }
+
+    private struct CacheEntry {
+        let plans: [RoutePlan]
+        let expiresAt: Date
+    }
+
+    /// Identical origin/destination requests within the TTL return instantly;
+    /// AMap's own server latency dominates planning time (~10s observed), so
+    /// repeated previews of the same trip should not pay it again.
+    private static let cacheTTL: TimeInterval = 300
+    /// Origin/destination rounded to this grid size count as the same request.
+    private static let cacheGridDeg = 0.0005 // ~55 m
 
     private let lock = NSLock()
     private var pendingQueue: [Pending] = []
     private var sdkLogTail: [String] = []
+    private var planCache: [String: CacheEntry] = [:]
 
     private override init() {
         super.init()
@@ -159,10 +176,30 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         guard AmapNaviKitBootstrap.isInstalled, AMapServices.shared() != nil else {
             throw AmapNaviKitError.sdkUnavailable
         }
+        let cacheKey = Self.cacheKey(mode: mode, origin: originWGS84, destination: destinationWGS84)
+        lock.lock()
+        let cached = planCache[cacheKey]
+        if let cached, cached.expiresAt > Date() {
+            lock.unlock()
+            appendSdkLog("[app] cache hit \(cacheKey.prefix(16)) plans=\(cached.plans.count)")
+            return cached.plans
+        }
+        if cached != nil {
+            planCache[cacheKey] = nil
+        }
+        lock.unlock()
+
         return try await withCheckedThrowingContinuation { continuation in
             let requestID = UUID()
             lock.lock()
-            pendingQueue.append(Pending(id: requestID, mode: mode, continuation: continuation))
+            pendingQueue.append(Pending(
+                id: requestID,
+                mode: mode,
+                originWGS84: originWGS84,
+                destinationWGS84: destinationWGS84,
+                startedAt: ContinuousClock.now,
+                continuation: continuation
+            ))
             lock.unlock()
             appendSdkLog("[app] begin id=\(requestID.uuidString.prefix(8)) mode=\(mode.rawValue) \(originWGS84.longitudeDeg),\(originWGS84.latitudeDeg)->\(destinationWGS84.longitudeDeg),\(destinationWGS84.latitudeDeg)")
 
@@ -193,14 +230,26 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
             }
 
             let accepted: Bool
-            if mode == .riding {
+            switch mode {
+            case .riding:
                 let manager = AMapNaviRideManager.sharedInstance()
                 manager.delegate = self
                 accepted = manager.calculateRideRoute(withStart: start, end: end)
-            } else {
+            case .walking:
                 let manager = AMapNaviWalkManager.sharedInstance()
                 manager.delegate = self
                 accepted = manager.calculateWalkRoute(withStart: [start], end: [end])
+            case .motorcycle:
+                // Motorcycle follows motor-vehicle routing (car roads), so its
+                // travel time differs from bicycle routing by design.
+                let manager = AMapNaviDriveManager.sharedInstance()
+                manager.delegate = self
+                accepted = manager.calculateDriveRoute(
+                    withStartPoints: [start],
+                    endPoints: [end],
+                    wayPoints: nil,
+                    drivingStrategy: .singleDefault
+                )
             }
             if !accepted {
                 failPending(id: requestID, base: AmapNaviKitError.rejected("路线规划未能发起，请稍后重试"))
@@ -260,6 +309,41 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         finishWithFailure(error, mode: .walking)
     }
 
+    /// Drive callbacks (motorcycle mode). Success selector is
+    /// driveManagerOnCalculateRouteSuccess: (importer-renders as
+    /// driveManager(onCalculateRouteSuccess:)) plus the newer variants with
+    /// type/result parameters that keep the driveManager: prefix form.
+    func driveManager(onCalculateRouteSuccess driveManager: AMapNaviDriveManager) {
+        finishWithRoutes(from: driveManager, mode: .motorcycle)
+    }
+
+    func driveManager(
+        _ driveManager: AMapNaviDriveManager,
+        onCalculateRouteSuccessWithType type: AMapNaviRoutePlanType
+    ) {
+        finishWithRoutes(from: driveManager, mode: .motorcycle)
+    }
+
+    func driveManager(
+        _ driveManager: AMapNaviDriveManager,
+        onCalculateRouteSuccessWithType type: AMapNaviRoutePlanType,
+        calculateRouteResult: AMapNaviCalculateRouteResult
+    ) {
+        finishWithRoutes(from: driveManager, mode: .motorcycle)
+    }
+
+    func driveManager(_ driveManager: AMapNaviDriveManager, onCalculateRouteFailure error: Error) {
+        finishWithFailure(error, mode: .motorcycle)
+    }
+
+    func driveManager(
+        _ driveManager: AMapNaviDriveManager,
+        onCalculateRouteFailure error: Error,
+        routePlanType: AMapNaviRoutePlanType
+    ) {
+        finishWithFailure(error, mode: .motorcycle)
+    }
+
     private func finishWithRoutes(from manager: AMapNaviRideManager, mode: AmapNaviKitRouteProvider.TravelMode) {
         appendSdkLog("[app] ride success routes=\(manager.naviRoutes().count)")
         finishWithRoutes(routeIDs: manager.naviRouteIDs(), routesByID: manager.naviRoutes(), mode: mode)
@@ -268,6 +352,31 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
     private func finishWithRoutes(from manager: AMapNaviWalkManager, mode: AmapNaviKitRouteProvider.TravelMode) {
         appendSdkLog("[app] walk success routes=\(manager.naviRoutes().count)")
         finishWithRoutes(routeIDs: manager.naviRouteIDs(), routesByID: manager.naviRoutes(), mode: mode)
+    }
+
+    private func finishWithRoutes(from manager: AMapNaviDriveManager, mode: AmapNaviKitRouteProvider.TravelMode) {
+        appendSdkLog("[app] drive success routes=\(manager.naviRoutes().count)")
+        finishWithRoutes(routeIDs: manager.naviRouteIDs(), routesByID: manager.naviRoutes(), mode: mode)
+    }
+
+    private static func cacheKey(
+        mode: AmapNaviKitRouteProvider.TravelMode,
+        origin: WGS84Point,
+        destination: WGS84Point
+    ) -> String {
+        func grid(_ value: Double) -> Int {
+            Int((value / cacheGridDeg).rounded())
+        }
+        return "\(mode.rawValue)|\(grid(origin.longitudeDeg)),\(grid(origin.latitudeDeg))->\(grid(destination.longitudeDeg)),\(grid(destination.latitudeDeg))"
+    }
+
+    private func storeInCache(_ pending: Pending, plans: [RoutePlan]) {
+        lock.lock()
+        planCache[Self.cacheKey(mode: pending.mode, origin: pending.originWGS84, destination: pending.destinationWGS84)] = CacheEntry(
+            plans: plans,
+            expiresAt: Date().addingTimeInterval(Self.cacheTTL)
+        )
+        lock.unlock()
     }
 
     /// Consume the oldest pending request of the given mode. The SDK callback
@@ -287,6 +396,10 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         mode: AmapNaviKitRouteProvider.TravelMode
     ) {
         guard let pending = popFirstPending(mode: mode) else { return }
+        let elapsed = ContinuousClock.now - pending.startedAt
+        let elapsedMs = elapsed.components.seconds * 1_000
+            + elapsed.components.attoseconds / 1_000_000_000_000_000
+        appendSdkLog("[app] converted plans mode=\(mode.rawValue) elapsed=\(elapsedMs)ms")
 
         let orderedRoutes = routeIDs.compactMap { routesByID[$0] }
         let plans = orderedRoutes.compactMap { Self.convert($0, mode: pending.mode) }
@@ -294,6 +407,7 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
             pending.continuation.resume(throwing: AmapNaviKitError.noRoute)
             return
         }
+        storeInCache(pending, plans: plans)
         pending.continuation.resume(returning: Array(plans.prefix(3)))
     }
 
@@ -355,6 +469,10 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
         )
 
         let generatedAtMs = UInt64(Date().timeIntervalSince1970 * 1_000)
+        let trafficLightCount = route.routeSegments
+            .flatMap { $0.links }
+            .filter { $0.isHadTrafficLights }
+            .count
         // traffic / speedLimitKph stay empty on purpose: per AMapNaviKit v11
         // headers, link trafficStatus is driving-only and the planning result
         // carries no speed-limit field for riding/walking, so there is nothing
@@ -369,7 +487,8 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
             polyline: polyline,
             maneuvers: maneuvers,
             traffic: [],
-            speedLimitKph: nil
+            speedLimitKph: nil,
+            trafficLightCount: trafficLightCount
         )
     }
 

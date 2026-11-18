@@ -981,6 +981,17 @@ class RoundView(context: Context) : View(context) {
         }
         dialTextPaint.textSize = radius * 0.05f
         canvas.drawText("MAX ${maxSpeedKph.roundToInt()}", cx, cy + radius * 0.55f, dialTextPaint)
+        // 导航态额外显示剩余路程与预计剩余时间（快照 0x10 已携带）
+        if (snapshot.remainingDistanceM > 0) {
+            val remainingKm = snapshot.remainingDistanceM / 1000f
+            val remMin = (snapshot.remainingDurationS / 60).coerceAtLeast(1)
+            dialTextPaint.color = 0xFFE8E8E8.toInt()
+            dialTextPaint.textSize = radius * 0.062f
+            canvas.drawText(
+                String.format("剩 %.1f km · 约 %d 分", remainingKm, remMin),
+                cx, cy + radius * 0.68f, dialTextPaint,
+            )
+        }
     }
 
     // endregion

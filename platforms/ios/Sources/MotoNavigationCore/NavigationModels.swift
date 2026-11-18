@@ -197,6 +197,8 @@ public struct RoutePlan: Codable, Equatable, Sendable {
     public let traffic: [TrafficSegment]
     /// OSM maxspeed（kph）。nil/0 表示网关未提供可信限速，表盘不显示限速牌。
     public let speedLimitKph: Int?
+    /// 沿路线的红绿灯总数（高德 Link 级 isHadTrafficLights 统计）。nil 表示未知。
+    public let trafficLightCount: Int?
 
     public init(
         routeID: String,
@@ -208,7 +210,8 @@ public struct RoutePlan: Codable, Equatable, Sendable {
         polyline: [GCJ02Point],
         maneuvers: [RouteManeuver],
         traffic: [TrafficSegment],
-        speedLimitKph: Int? = nil
+        speedLimitKph: Int? = nil,
+        trafficLightCount: Int? = nil
     ) {
         schemaVersion = 1
         self.routeID = routeID
@@ -221,6 +224,7 @@ public struct RoutePlan: Codable, Equatable, Sendable {
         self.maneuvers = maneuvers
         self.traffic = traffic
         self.speedLimitKph = speedLimitKph
+        self.trafficLightCount = trafficLightCount
     }
 
     enum CodingKeys: String, CodingKey {
@@ -235,6 +239,7 @@ public struct RoutePlan: Codable, Equatable, Sendable {
         case maneuvers
         case traffic
         case speedLimitKph = "speed_limit_kph"
+        case trafficLightCount = "traffic_light_count"
     }
 }
 
