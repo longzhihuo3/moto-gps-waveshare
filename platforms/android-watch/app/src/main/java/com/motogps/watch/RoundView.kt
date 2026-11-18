@@ -347,7 +347,7 @@ class RoundView(context: Context) : View(context) {
         color = 0xFF1A1A1A.toInt()
         textAlign = Paint.Align.CENTER
     }
-    // ---- 速度页大表盘 + 导航页速度徽章（借鉴 gps-speedometer：模拟指针 + 大号数字）----
+    // ---- 速度页大表盘 + 导航页顶部速度（借鉴 gps-speedometer / Garmin：模拟指针 + 大号数字）----
     private val needlePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         style = Paint.Style.STROKE
@@ -362,12 +362,6 @@ class RoundView(context: Context) : View(context) {
         color = 0xFF9E9E9E.toInt()
         textAlign = Paint.Align.CENTER
     }
-    private val badgePaint = Paint().apply { color = 0xB3000000.toInt() }
-    private val badgeStrokePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
-        style = Paint.Style.STROKE
-        strokeCap = Paint.Cap.ROUND
-    }
-    private val accentFillPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val infoPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
         textAlign = Paint.Align.CENTER
@@ -375,12 +369,12 @@ class RoundView(context: Context) : View(context) {
     }
     private val navSpeedPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = Color.WHITE
-        textAlign = Paint.Align.LEFT
+        textAlign = Paint.Align.CENTER
         isFakeBoldText = true
     }
     private val navUnitPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = 0xFFBDBDBD.toInt()
-        textAlign = Paint.Align.LEFT
+        textAlign = Paint.Align.CENTER
     }
     // 刻度数字缓存（仅最大刻度变化时重建字符串，避免 60fps 逐帧分配）
     private var gaugeMaxScale = -1f
@@ -846,65 +840,39 @@ class RoundView(context: Context) : View(context) {
         drawManeuver(canvas, startX + iconSize * 0.6f, baseY - radius * 0.07f, iconSize, snapshot.maneuver)
         canvas.drawText(distText, startX + iconSize * 1.2f + gap, baseY, textPaint)
 
-        // 6. 顶部信息区：左上速度徽章（大号加粗，抬手即读）/ 中上道路名 / 右上限速牌
+        // 6. 顶部信息区：中上大号速度（嵌入进度弧正下方，整页统一视觉） / 其下道路名 / 右上限速牌
         val overLimit = snapshot.speedLimitKph > 0 && smoothSpeed() > snapshot.speedLimitKph + 4f
-        drawNavSpeed(canvas, cx - radius * 0.70f, cy - radius * 0.62f, radius, overLimit)
-        if (snapshot.roadName.isNotEmpty()) {
-            hintPaint.textSize = radius * 0.085f
-            canvas.drawText(snapshot.roadName.take(12), cx, cy - radius * 0.74f, hintPaint)
+        drawNavSpeed(canvas, cx, cy, radius, overLimit)
+        if (snapshot.offRoute) {
+            textPaint.textSize = radius * 0.075f
+            textPaint.color = 0xFFE24B4A.toInt()
+            canvas.drawText("偏航重算中", cx, cy - radius * 0.28f, textPaint)
+            textPaint.color = Color.WHITE
+        } else if (snapshot.roadName.isNotEmpty()) {
+            hintPaint.textSize = radius * 0.068f
+            canvas.drawText(snapshot.roadName.take(12), cx, cy - radius * 0.28f, hintPaint)
         }
         if (snapshot.speedLimitKph > 0) {
             drawSpeedLimit(canvas, cx + radius * 0.62f, cy - radius * 0.52f, radius * 0.13f, snapshot.speedLimitKph)
         }
-        if (snapshot.offRoute) {
-            textPaint.textSize = radius * 0.10f
-            textPaint.color = 0xFFE24B4A.toInt()
-            canvas.drawText("偏航重算中", cx, cy - radius * 0.52f, textPaint)
-            textPaint.color = Color.WHITE
-        }
     }
 
-    /** 导航页速度徽章：半透明底衬 + 大号加粗数字（约为旧版的 3 倍），超速变红。
+    /** 导航页常显速度：嵌入顶部进度弧正下方的大号加粗数字（居中，整页统一视觉），超速变红。
      *  数值按整数缓存，仅变化时重建字符串（避免 60fps 分配触发 GC 卡顿）。 */
     private var cachedNavSpeed = Int.MIN_VALUE
     private var cachedNavSpeedText = "0"
 
-    /**
-     * 导航页速度徽章 v2（参照运动类手表 App 的数据胶囊）：
-     * 半透明圆角底衬 + 速度色描边 + 左侧色条 + 大号加粗数字；超速整枚变红。
-     */
-    private fun drawNavSpeed(canvas: Canvas, x: Float, y: Float, radius: Float, overLimit: Boolean) {
+    private fun drawNavSpeed(canvas: Canvas, cx: Float, cy: Float, radius: Float, overLimit: Boolean) {
         val spd = smoothSpeed().roundToInt()
         if (spd != cachedNavSpeed) {
             cachedNavSpeed = spd
             cachedNavSpeedText = spd.toString()
         }
-        val fraction = (smoothSpeed() / maxOf(60f, (smoothSpeed() / 20f).roundToInt() * 20f)).coerceIn(0f, 1f)
-        val accent = if (overLimit) 0xFFE24B4A.toInt() else speedColor(fraction)
-        navSpeedPaint.textSize = radius * 0.24f
-        navUnitPaint.textSize = radius * 0.062f
-        val numW = navSpeedPaint.measureText(cachedNavSpeedText)
-        val unitW = navUnitPaint.measureText("km/h")
-        val padX = radius * 0.055f
-        val padY = radius * 0.045f
-        val accentW = radius * 0.032f
-        val numBaseline = y + padY + radius * 0.20f
-        val unitBaseline = numBaseline + radius * 0.115f
-        val badgeW = maxOf(numW, unitW) + padX * 2f + accentW
-        val badgeH = unitBaseline - y + radius * 0.04f + padY
-        // 底衬胶囊（描边 + 填充 + 左侧色条）
-        scratchPath.reset()
-        scratchPath.addRoundRect(
-            x, y, x + badgeW, y + badgeH,
-            radius * 0.11f, radius * 0.11f, Path.Direction.CW,
-        )
-        canvas.drawPath(scratchPath, badgePaint)
-        badgeStrokePaint.color = accent
-        badgeStrokePaint.strokeWidth = radius * 0.014f
-        canvas.drawPath(scratchPath, badgeStrokePaint)
-        canvas.drawRect(x, y + badgeH * 0.22f, x + accentW, y + badgeH * 0.78f, accentFillPaint.apply { color = accent })
-        canvas.drawText(cachedNavSpeedText, x + accentW + padX, numBaseline, navSpeedPaint)
-        canvas.drawText("km/h", x + accentW + padX, unitBaseline, navUnitPaint)
+        navSpeedPaint.textSize = radius * 0.235f
+        navSpeedPaint.color = if (overLimit) 0xFFFF5252.toInt() else Color.WHITE
+        canvas.drawText(cachedNavSpeedText, cx, cy - radius * 0.54f, navSpeedPaint)
+        navUnitPaint.textSize = radius * 0.055f
+        canvas.drawText("km/h", cx, cy - radius * 0.41f, navUnitPaint)
     }
 
     private fun drawSpeedLimit(canvas: Canvas, cx: Float, cy: Float, r: Float, limitKph: Int) {        canvas.drawCircle(cx, cy, r, limitBgPaint)
