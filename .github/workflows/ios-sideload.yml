@@ -49,6 +49,8 @@ jobs:
             -only-testing:MotoGPSUnitTests -only-testing:MotoGPSUITests/GatewaySettingsUITests \
             CODE_SIGNING_ALLOWED=NO
       - name: Build unsigned IPA for re-signing
+        env:
+          MOTO_AMAP_KEY: ${{ secrets.MOTO_AMAP_KEY }}
         run: scripts/ios/build_sideload_ipa.sh
       - name: Export UI screenshots
         if: always()

@@ -101,6 +101,22 @@ The **iOS sideload build** GitHub Actions workflow runs app unit tests, offline 
 packaging script. On a successful run, download `MOTO-GPS-unsigned-IPA` from Artifacts (GitHub login required)
 and extract the IPA and checksum file. Public Releases provide direct downloads.
 
+### AMap key injection (never committed)
+
+The AMap iOS SDK key is a client-side identifier (shipping it inside the app is the
+industry norm), but **plaintext keys never enter git**:
+
+- **Local builds**: put the key in `platforms/ios/Secrets.xcconfig` (gitignored);
+  the build script picks it up automatically;
+- **CI builds**: the `MOTO_AMAP_KEY` repository secret (Settings → Secrets and
+  variables → Actions) is injected into the IPA at packaging time;
+- `project.yml` keeps only a `$(MOTO_AMAP_KEY)` build-setting reference; with an
+  empty key the app falls back to gateway mode.
+
+Distributing an IPA necessarily ships the SDK key (same as every AMap app), but the
+repository's plaintext history no longer contains it; to fully retire a leaked old
+key, delete and recreate it in the AMap console and update both injection sources.
+
 Build and simulator checks establish compilation, settings behavior and request switching. They do not replace
 SideStore/LiveContainer installation, BLE, locked-screen location or road tests on real devices.
 The preview does not claim those unverified compatibility results.

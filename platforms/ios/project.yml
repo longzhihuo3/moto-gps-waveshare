@@ -60,7 +60,11 @@ targets:
           - bluetooth-central
         MOTOGPSGatewayBaseURL: https://example.invalid/moto-gps/api/
         # AMap iOS SDK key. Empty = fall back to the self-hosted gateway.
-        MOTOGPSAMapKey: "b7905be03d81710699b79019c8af4d67"
+        # Injected at build time from the MOTO_AMAP_KEY build setting — never
+        # commit a real key here. Local builds: platforms/ios/Secrets.xcconfig
+        # (gitignored). CI: the MOTO_AMAP_KEY GitHub secret (see
+        # scripts/ios/build_sideload_ipa.sh and .github/workflows/ios-sideload.yml).
+        MOTOGPSAMapKey: $(MOTO_AMAP_KEY)
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
         UIApplicationSceneManifest:
@@ -73,6 +77,9 @@ targets:
         PRODUCT_NAME: MOTO GPS
         MARKETING_VERSION: 0.3.1
         CURRENT_PROJECT_VERSION: 15
+        # Real value comes from Secrets.xcconfig (local) or the CI secret;
+        # empty default keeps builds green without a key.
+        MOTO_AMAP_KEY: ""
         SWIFT_VERSION: 5.0
         SWIFT_STRICT_CONCURRENCY: targeted
         SWIFT_OBJC_BRIDGING_HEADER: App/MotoGPS-Bridging-Header.h

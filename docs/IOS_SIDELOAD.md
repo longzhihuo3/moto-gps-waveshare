@@ -94,5 +94,17 @@ scripts/ios/build_sideload_ipa.sh
 成功运行后，在 Artifacts 中下载 `MOTO-GPS-unsigned-IPA`（需 GitHub 登录），解压后得到 IPA 和校验文件。
 公开 Release 则可直接下载。
 
+### 高德 Key 的注入方式（不进仓库）
+
+高德 iOS SDK Key 属于客户端标识（随 App 分发是行业常态），但**明文密钥不进 git**：
+
+- **本地构建**：把 Key 写进 `platforms/ios/Secrets.xcconfig`（已被 .gitignore），构建脚本自动读取；
+- **CI 构建**：仓库 Settings → Secrets and variables → Actions 里的 `MOTO_AMAP_KEY`
+  Secret 会在打包时注入 IPA；
+- `project.yml` 里只保留 `$(MOTO_AMAP_KEY)` 构建设置引用，密钥为空时 App 退回网关模式。
+
+分发 IPA 本身必然携带 SDK Key（与所有高德应用一致），但仓库明文历史不再包含密钥；
+如需彻底作废已泄漏的旧 Key，在高德控制台删除重建并更新上述两处注入源。
+
 构建和模拟器测试只能确认程序能够编译、设置与请求切换逻辑正常，不替代 SideStore / LiveContainer
 真机安装、BLE、锁屏定位和真实道路测试。测试版不提供这些尚未完成的兼容性保证。
