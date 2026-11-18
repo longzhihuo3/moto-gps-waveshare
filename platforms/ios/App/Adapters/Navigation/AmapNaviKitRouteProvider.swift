@@ -319,14 +319,14 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
 
     func driveManager(
         _ driveManager: AMapNaviDriveManager,
-        onCalculateRouteSuccessWithType type: AMapNaviRoutePlanType
+        onCalculateRouteSuccessWith type: AMapNaviRoutePlanType
     ) {
         finishWithRoutes(from: driveManager, mode: .motorcycle)
     }
 
     func driveManager(
         _ driveManager: AMapNaviDriveManager,
-        onCalculateRouteSuccessWithType type: AMapNaviRoutePlanType,
+        onCalculateRouteSuccessWith type: AMapNaviRoutePlanType,
         calculateRouteResult: AMapNaviCalculateRouteResult
     ) {
         finishWithRoutes(from: driveManager, mode: .motorcycle)
