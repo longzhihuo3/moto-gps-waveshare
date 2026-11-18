@@ -196,7 +196,8 @@ public struct RoutePlan: Codable, Equatable, Sendable {
     public let maneuvers: [RouteManeuver]
     public let traffic: [TrafficSegment]
     /// OSM maxspeed（kph）。nil/0 表示网关未提供可信限速，表盘不显示限速牌。
-    public let speedLimitKph: Int?
+    /// var：算路完成后 provider 可能异步补填（OSM 查询在返回前短暂等待）。
+    public var speedLimitKph: Int?
     /// 沿路线的红绿灯总数（高德 Link 级 isHadTrafficLights 统计）。nil 表示未知。
     public let trafficLightCount: Int?
 

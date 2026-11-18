@@ -409,8 +409,26 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
             pending.continuation.resume(throwing: AmapNaviKitError.noRoute)
             return
         }
-        storeInCache(pending, plans: plans)
-        pending.continuation.resume(returning: Array(plans.prefix(3)))
+        // 摩托（驾车）：算路后补 OSM 真实限速（best-effort，3s 超时；高德
+        // 不透出限速数据，OSM maxspeed 是唯一可编程来源）。成功后限速牌才
+        // 会出现在手表导航页；失败静默按无限速处理。骑行/步行路线没有
+        // 可信限速概念，保持 nil。
+        if pending.mode == .motorcycle {
+            Task.detached(priority: .userInitiated) { [weak self] in
+                var enriched = plans
+                if let limit = await OSMRouteSpeedLimit.fetchSpeedLimitKph(polylineGCJ02: enriched[0].polyline) {
+                    enriched[0].speedLimitKph = limit
+                    self?.appendSdkLog("[app] osm speed limit \(limit) kph")
+                } else {
+                    self?.appendSdkLog("[app] osm speed limit unavailable (best-effort skipped)")
+                }
+                self?.storeInCache(pending, plans: enriched)
+                pending.continuation.resume(returning: Array(enriched.prefix(3)))
+            }
+        } else {
+            storeInCache(pending, plans: plans)
+            pending.continuation.resume(returning: Array(plans.prefix(3)))
+        }
     }
 
     private func finishWithFailure(_ error: Error, mode: AmapNaviKitRouteProvider.TravelMode) {
@@ -475,11 +493,13 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
             .flatMap { $0.links }
             .filter { $0.isHadTrafficLights }
             .count
-        // traffic / speedLimitKph stay empty on purpose: per AMapNaviKit v11
+        // traffic / speedLimitKph stay empty at planning time: per AMapNaviKit v11
         // headers, link trafficStatus is driving-only and the planning result
         // carries no speed-limit field for riding/walking, so there is nothing
-        // to map. The iOS gateway path never filled them either (the OSM
-        // speed-limit pipe serves the Android phone app only).
+        // to map. For motorcycle, the real speed limit is attached afterwards
+        // by finishWithRoutes via OSM Overpass maxspeed (best-effort). The iOS
+        // gateway path never filled them either (the OSM speed-limit pipe
+        // serves the Android phone app only).
         return RoutePlan(
             routeID: "navikit-\(route.routeLength)-\(generatedAtMs)-\(maneuvers.count)",
             provider: "amap-navikit",
