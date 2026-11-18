@@ -12,8 +12,8 @@ android {
         applicationId = "com.motogps.watch"
         minSdk = 28
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0"
+        versionCode = 14
+        versionName = "0.14.0"
     }
 
     buildTypes {
