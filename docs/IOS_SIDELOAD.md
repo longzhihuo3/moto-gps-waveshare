@@ -8,7 +8,7 @@
 
 [下载侧载测试版](https://github.com/mx3353672833-debug/moto-gps-waveshare/releases/tag/v0.3.1-sideload)
 
-下载 `MOTO-GPS-0.3.1-6-unsigned.ipa`，`SHA256SUMS.txt` 用于核对文件完整性。
+下载最新 `MOTO-GPS-0.3.1-*-unsigned.ipa`，`SHA256SUMS.txt` 用于核对文件完整性。
 源码和构建方式公开在本仓库；不要向作者或他人提供 Apple 账号密码、签名证书或配对文件。
 
 ## 通过 SideStore 安装
@@ -24,7 +24,27 @@ SideStore 使用免费 Apple 账号时有应用数量和约 7 天签名有效期
 具体安装条件与刷新方式以 [SideStore 官方说明](https://docs.sidestore.io/docs/faq)为准。
 侧载安装流程可行，不等于已经在所有 iOS / SideStore 版本上完成蓝牙和后台导航验收。
 
-## 设置自己的网关
+## 重要：SideStore 重签名与高德 Key 绑定
+
+高德开放平台的 Key 按 **Bundle ID** 绑定。SideStore 重签名时会把 App 的 Bundle ID
+改写成自己的标识（原 ID 保存在 `ALTBundleID`），这会导致搜索报 `INVALID_USER_SCODE`。
+
+解决办法（已验证，约 30 秒）：
+
+1. 打开 App 时若搜索报 `INVALID_USER_SCODE`，报错弹窗中会直接显示**本机真实 Bundle ID**
+   （SideStore 改写后的那个）；
+2. 登录[高德开放平台控制台](https://console.amap.com/)，找到自己的应用，把绑定的
+   Bundle ID 改成上一步显示的 ID；
+3. **删除 App 并重新安装**（仅覆盖安装不会生效），之后搜索与算路即恢复正常。
+
+另外，iOS 端自 v9 起内嵌 AMapNaviKit：搜索与算路不再依赖网关。若不部署网关，
+可直接跳过下一节；使用网关时，同样需要保证网关侧高德 Key 的绑定与配置正确。
+
+## 设置自己的网关（可选）
+
+自 v9 起 iOS App 已内嵌 AMapNaviKit，搜索与算路**不配置网关也能完整使用**。
+网关作为可选链路保留：未部署网关时 App 内置 SDK 直连高德；已部署时可在
+App 内填写网关地址切换到网关链路。
 
 第一次启动会显示“设置导航网关”，也可以点出发页左上角齿轮进入“网关设置”。
 

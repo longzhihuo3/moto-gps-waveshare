@@ -8,6 +8,20 @@ Status convention: `[ ]` not started, `[x]` completed. Each item is marked with 
 
 ## Current sprint: Waveshare real hardware + iPhone
 
+### Completed: watch port and embedded navigation (2026-11, additions in this repo)
+
+- [x] **(A)** New `platforms/android-watch`: native OPPO Watch X app, BLE GATT peripheral direct to the iPhone, fully compatible with upstream BLE v1
+- [x] **(A)** Watch offscreen bitmap rendering at 60fps + heading fusion v3 (no drift when resting flat) + drag-follow two-page swipe
+- [x] **(A)** iOS embeds AMapNaviKit replacing gateway routing: two-step privacy compliance up front, riding/walking/motorcycle engines (v9~v12, verified on a real device)
+- [x] **(A)** Fixed the AMapNaviKit v11 callback-rename trap where the success callback compiled but never fired (v12)
+- [x] **(A/B)** UUID-identified planning queue + 5-minute result cache + end-to-end timing (v13/v14)
+- [x] **(A/B)** Bicycle/motorcycle travel-mode switch on the home screen; traffic-light count on route cards; car icon replaced with a bicycle (v14)
+- [x] **(A/B)** Watch Speed page shows remaining km and ETA (snapshot 0x10 fields, decoded over BLE and Wi-Fi) (v14)
+- [x] **(A)** Watch speed page redesigned as a full-screen speedometer (270° color-graded arc + numbered ticks + analog needle + extra-large center number); navigation speed embedded under the top arc, red over the limit (v15~v17)
+- [x] **(B)** Motorcycle routes enriched with real road speed limits from OSM Overpass after planning (3 s timeout, silent skip; verified that the AMap iOS SDK exposes no speed-limit data at all) (v15 iOS)
+
+### Waveshare real hardware (upstream legacy)
+
 - [x] **(A)** Migrate the Web, Presenter and ESP32 single framebuffer to 466 × 466 RGB565
 - [x] **(C)** Add the `?demo=1` four-page round-display simulation entry point that needs no positioning/key, and complete the visual check at iPhone size
 - [x] **(A/B)** Freeze the versioned BLE GATT UUIDs, fragmentation, CRC, heartbeat, display snapshots and touch commands
@@ -30,6 +44,8 @@ Status convention: `[ ]` not started, `[x]` completed. Each item is marked with 
 - [x] **(B)** Pass encode/decode tests on both the C++ and Swift sides with the same set of protocol fixtures
 - [x] **(B)** Back up the factory 32 MB Flash, generate and report the SHA-256, and after explicit confirmation to flash, complete the first flashing of the Waveshare board and verify that it boots
 - [ ] **(B)** Long-run real-hardware verification of normal screen lock, backgrounding, the fixed disconnection recovery, off-route rerouting and traffic refresh
+- [ ] **(A/B)** On-bike acceptance of the watch + iPhone combination: BLE lock-screen keep-alive, off-route rerouting, over-limit red speed, speed-limit badge coverage, real readability of the speedometer page
+- [ ] **(C)** Speed up CI: split the iOS simulator UI tests out of the main build path so `GatewaySettingsUITests` flakiness no longer blocks artifact production
 - [ ] **(B)** On the physical CO5300 + iPhone, accept item by item the six state transitions of offline, handshake, success, ready to ride, planning and route present, and re-check repeated reconnection, reduced motion and that no stale navigation data is shown when there is no route
 - [ ] **(B)** Evaluate the three BLE HID media keys; "like" and cross-player track information remain optional capabilities
 - [x] **(B)** iOS uses the public `systemMusicPlayer` to connect Apple Music previous track, play/pause, next track and the MediaState return; "like", which has no public interface, stays hidden and returns Unsupported

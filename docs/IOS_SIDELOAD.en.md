@@ -10,7 +10,7 @@ It is not an App Store or TestFlight package and cannot be installed simply by o
 
 [Download the sideload preview](https://github.com/mx3353672833-debug/moto-gps-waveshare/releases/tag/v0.3.1-sideload)
 
-Download `MOTO-GPS-0.3.1-6-unsigned.ipa`; use `SHA256SUMS.txt` to verify file integrity.
+Download the latest `MOTO-GPS-0.3.1-*-unsigned.ipa`; use `SHA256SUMS.txt` to verify file integrity.
 Source and build steps are in this repository. Do not send your Apple password, signing certificate
 or pairing file to the author or other people.
 
@@ -27,7 +27,30 @@ Free Apple accounts have app-count limits and a roughly seven-day signing period
 See the [SideStore FAQ](https://docs.sidestore.io/docs/faq) for current installation and refresh requirements.
 A viable sideloading method does not establish Bluetooth/background navigation compatibility on every iOS or SideStore version.
 
-## Configure your gateway
+## Important: SideStore re-signing vs. the AMap key binding
+
+AMap keys are bound per **Bundle ID**. SideStore re-signing rewrites the app's Bundle ID
+(the original is kept in `ALTBundleID`), which makes search fail with `INVALID_USER_SCODE`.
+
+Verified fix (takes about 30 seconds):
+
+1. If search reports `INVALID_USER_SCODE`, the error dialog shows the **device's real
+   Bundle ID** (the rewritten one);
+2. In the [AMap Open Platform console](https://console.amap.com/), change your app's
+   bound Bundle ID to the one shown;
+3. **Delete the app and reinstall** (a plain overwrite does not take effect) — search
+   and routing then work normally.
+
+Also note: since v9 the iOS app embeds AMapNaviKit — search and routing no longer
+require a gateway. Without one you can skip the next section entirely; if you deploy
+a gateway, its AMap key binding and configuration must be correct as well.
+
+## Configure your gateway (optional)
+
+Since v9 the iOS app embeds AMapNaviKit: search and routing work **fully without a
+gateway**. The gateway remains an optional path — without one the app talks to AMap
+directly through the embedded SDK; when deployed, its address can be entered in the
+app to switch to the gateway path.
 
 A clean installation shows 设置导航网关 (Set up navigation gateway). You can also open 网关设置
 from the gear icon at the top left of the departure screen.

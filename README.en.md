@@ -5,10 +5,11 @@
 **Handlebar navigation, now on your wrist.**
 
 A port of [MOTO GPS · Waveshare Edition](https://github.com/mx3353672833-debug/moto-gps-waveshare):
-the original Waveshare ESP32 round-display hardware → **OPPO Watch X (Android)**,
-paired with the original iPhone app and a self-hosted routing gateway.
+the original Waveshare ESP32 round-display hardware → **OPPO Watch X (Android)**;
+the iPhone app has been upgraded from "self-hosted gateway" to an **embedded AMapNaviKit**,
+so search and routing work fully even without a gateway.
 
-*Android watch app · enhanced iOS app · Node.js routing gateway*
+*Android watch app · iOS app with embedded nav SDK · optional Node.js routing gateway*
 
 </div>
 
@@ -40,20 +41,33 @@ no soldering, no flashing.
 ```mermaid
 flowchart LR
     subgraph iPhone["iPhone · iOS app"]
-        CORE[NavCore<br/>routing · reroute · 5Hz snapshots]
-        AMAP[Amap Web services<br/>POI / routing / geocode]
+        BOOT[AMapNaviKit Bootstrap<br/>privacy compliance · key check]
+        SESSION[Planning session<br/>UUID queue · 5min cache · timing]
+        CORE[NavCore<br/>reroute · 5Hz snapshots]
+        OSM[OSM Overpass<br/>motorcycle speed limit GCJ→WGS]
     end
-    subgraph GW["Self-hosted gateway backend :8787"]
-        NODE[Node.js gateway<br/>cache · GCJ-02 · OSM speed limits]
+    subgraph GW["Optional: self-hosted gateway backend :8787"]
+        NODE[Node.js gateway<br/>cache · correction · OSM limits]
     end
     subgraph WATCH["OPPO Watch X · this repo's Android app"]
         FUSION[Heading fusion v3<br/>gyro-led + bias removal]
-        RENDER[Offscreen bitmap render<br/>60fps round map]
+        RENDER[Offscreen bitmap render<br/>60fps round map · speedometer dial]
     end
-    AMAP <--> NODE
-    CORE <--> AMAP
+    BOOT --> SESSION
+    SESSION --> OSM
+    SESSION -."fallback path".-> NODE
     CORE -- "BLE 0xB7 frame protocol v1<br/>snapshots / route / roadnet / commands" --> WATCH
 ```
+
+- **iPhone**: POI search and routing are embedded via **AMapNaviKit** (riding /
+  walking / motorcycle engines, two-step privacy compliance enforced before any
+  manager init), with a 5-minute planning cache; motorcycle routes get their real
+  road speed limit from OSM Overpass after planning — the AMap iOS SDK exposes no
+  speed-limit data at all;
+- **Gateway (optional)**: the legacy Node.js proxy path is kept; without it the
+  iPhone works fully through the embedded SDK;
+- **Watch**: this repo's rewritten Kotlin app connects to the iPhone over BLE GATT
+  peripheral — no Android phone app, no Google Play services.
 
 ## Watch app highlights
 
@@ -65,7 +79,15 @@ flowchart LR
   CONNECTED (breathing green check) → READY TO RIDE → BUILDING ROUTE (animated draw).
 - **ViewPager-style page transitions** (drag-follow + decelerate settle), 3-page cycle:
   navigation → speed → music (launches the watch's system music controller).
-- **Speed-limit badge** from OSM Overpass (GCJ-02 corrected, mode-filtered).
+- **Speedometer speed page** — full-screen gauge: 270° color-graded speed arc
+  (green→orange→red), numbered ticks, analog needle, extra-large center number;
+  in navigation it shows remaining distance, ETA and session max at the bottom.
+- **Navigation speed** — large bold number embedded right below the top progress arc
+  (one coherent arc + number visual language); turns red over the speed limit.
+- **Speed-limit badge** shown whenever the nav snapshot carries a limit (motorcycle
+  mode sources it from OSM Overpass, GCJ-02 corrected, mode-filtered).
+- **Remaining info** — remaining distance, ETA and live speed during navigation
+  (snapshot 0x10 fields, decoded over both BLE and Wi-Fi).
 - **Honest display** — explicit pages for signal loss / no fix / no route; never fake data.
 
 ## Quick start
@@ -77,7 +99,7 @@ gradle assembleDebug        # JDK 17 + Android SDK
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 adb shell dumpsys deviceidle whitelist +com.motogps.watch
 
-# Routing gateway
+# Routing gateway (optional — the embedded AMapNaviKit works without it)
 cd backend && npm install && npm start   # listens on :8787
 ```
 
@@ -105,10 +127,17 @@ Gateway configuration: [GATEWAY_SETUP.md](docs/GATEWAY_SETUP.md) (Amap key requi
 ## Differences from upstream
 
 - New `platforms/android-watch`: native OPPO Watch X app (the core of this repo);
-- Android phone app (`platforms/android`) verified to build in this fork and compatible
-  with the watch app's BLE peripheral;
-- iOS: pushes BUILDING ROUTE state as soon as route planning starts; allows LAN HTTP to
-  the gateway; speed-limit passthrough;
+- iOS (major v9~v15 upgrades):
+  - **Embedded AMapNaviKit replaces gateway routing**: two-step privacy compliance
+    enforced before any manager init; riding / walking / motorcycle engines;
+  - **Travel-mode switch**: pick bicycle or motorcycle on the home screen; motorcycle
+    uses the driving engine with its own routes and ETAs;
+  - **Planning enhancements**: UUID-identified request queue, 5-minute result cache,
+    end-to-end timing, traffic-light count on route cards;
+  - **Motorcycle speed limit**: after planning, samples the polyline every ~600 m
+    (GCJ-02→WGS-84 corrected) and queries OSM maxspeed, taking the modal value —
+    3 s timeout, silent skip on failure (the AMap iOS SDK exposes no speed limit);
+  - pushes BUILDING ROUTE state as soon as planning starts; LAN HTTP gateway still optional;
 - Gateway: search LRU cache (10 min TTL), OSM speed-limit pipeline;
 - Watch protocol stack is fully compatible with upstream BLE v1
   (0xB7 frames, CRC-16/CCITT-FALSE, handshake/heartbeat/watchdog).

@@ -5,9 +5,10 @@
 **把车把圆屏导航，装进你的手腕。**
 
 基于 [MOTO GPS · Waveshare Edition](https://github.com/mx3353672833-debug/moto-gps-waveshare) 的移植与增强：
-原项目的微雪 ESP32 圆屏硬件 → **OPPO Watch X 安卓手表**，配合原版 iPhone App 与自部署路线网关。
+原项目的微雪 ESP32 圆屏硬件 → **OPPO Watch X 安卓手表**；iPhone App 已从「自部署网关」
+升级为**内嵌高德导航 SDK（AMapNaviKit）**，不部署网关也能完整搜索与算路。
 
-*Android 手表 App · 改良版 iOS App · Node.js 路线网关*
+*Android 手表 App · 内嵌导航 SDK 的 iOS App ·（可选）Node.js 路线网关*
 
 </div>
 
@@ -35,23 +36,28 @@
 ```mermaid
 flowchart LR
     subgraph iPhone["iPhone · iOS App"]
-        CORE[导航核心 NavCore<br/>路线规划 · 偏航重算 · 快照 5Hz]
-        AMAP[高德 Web 服务<br/>POI 搜索 / 路线 / 逆地理]
+        BOOT[AMapNaviKit Bootstrap<br/>隐私合规 · API Key 校验]
+        SESSION[规划会话<br/>UUID 队列 · 5min 缓存 · 耗时打点]
+        CORE[导航核心 NavCore<br/>偏航重算 · 快照 5Hz]
+        OSM[OSM Overpass<br/>摩托限速补齐 GCJ→WGS]
     end
-    subgraph GW["自部署网关 backend :8787"]
-        NODE[Node.js 网关<br/>缓存 · GCJ-02 纠偏 · OSM 限速]
+    subgraph GW["可选：自部署网关 backend :8787"]
+        NODE[Node.js 网关<br/>缓存 · 纠偏 · OSM 限速]
     end
     subgraph WATCH["OPPO Watch X · 本仓库 Android App"]
         FUSION[航向融合 v3<br/>陀螺主导 + 零偏扣除]
-        RENDER[离屏位图渲染<br/>60fps 圆屏地图]
+        RENDER[离屏位图渲染<br/>60fps 圆屏地图 · 仪表盘速度页]
     end
-    AMAP <--> NODE
-    CORE <--> AMAP
+    BOOT --> SESSION
+    SESSION --> OSM
+    SESSION -."备用链路".-> NODE
     CORE -- "BLE 0xB7 帧协议 v1<br/>快照/路线/路网/命令" --> WATCH
 ```
 
-- **iPhone**：定位、搜索、路线计算（复用上游 iOS App 与共享 C++ NavCore，本仓库小幅增强）；
-- **网关**：Node.js 轻量代理，聚合高德能力，附加 OSM 限速牌数据与 LRU 搜索缓存；
+- **iPhone**：定位、POI 搜索与算路已内嵌 **AMapNaviKit**（骑行/步行/摩托三种模式，
+  规划前强制完成两步隐私合规），支持 5 分钟结果缓存；摩托模式算路后从 OSM Overpass
+  补齐真实路段限速（高德 SDK 不透出限速数据）；
+- **网关（可选）**：旧的 Node.js 代理链路仍保留，未部署网关时 iPhone 走内嵌 SDK 完整可用；
 - **手表**：本仓库重写的 Kotlin App，以 BLE GATT 外设角色与 iPhone 直连——
   不需要手机安卓 App，不需要 Google Play 服务。
 
@@ -64,7 +70,10 @@ flowchart LR
 | 生命周期页面 | 对齐上游 LVGL 规格：CONNECT PHONE → CONNECTING → CONNECTED（绿勾呼吸）→ READY TO RIDE → BUILDING ROUTE（路线描画动画） |
 | 页面切换 | 拖拽跟手 + 二次缓出的双页滑动过渡（类系统 ViewPager 手感） |
 | 三页循环 | 导航 → 速度 → 音乐；音乐页直接拉起手表系统音乐控制 |
-| 限速牌 | 右上角圆牌常显，数据来自 OSM Overpass（GCJ-02 纠偏 + 众数过滤） |
+| 仪表盘速度页 | 全屏速度计：270° 彩色速度弧（绿→橙→红）+ 刻度数字 + 模拟指针 + 中央超大数字，导航态底部显示剩余路程与预计剩余时间 |
+| 导航页速度 | 大号加粗速度嵌入顶部进度弧正下方，与弧环一体化；超速变红 |
+| 限速牌 | 右上角圆牌，导航快照携带限速时显示（摩托模式数据来自 OSM Overpass，GCJ-02 纠偏 + 众数过滤） |
+| 剩余信息 | 导航中实时显示剩余公里数、预计剩余分钟与实时速度（快照 0x10 携带，BLE 与 Wi-Fi 双链路解码） |
 | 诚实显示 | 信号丢失、无定位、无路线都有明确状态页，不显示假数据 |
 
 ## 快速开始
@@ -108,7 +117,10 @@ gradle assembleDebug   # 需要 JDK 17、Android SDK 与 NDK（shared C++ 经 ND
 > 注：上游标注「真机配对与骑行仍在验证中」，与本仓库手表 App 的组合同样处于实验阶段，
 > 欢迎提 Issue 反馈机型与现象。
 
-### 3. 路线网关
+### 3. 路线网关（可选）
+
+自 v9 起 iOS App 已内嵌 AMapNaviKit，**不部署网关也能完整搜索与算路**；网关作为可选
+备用链路保留：
 
 ```bash
 cd backend
@@ -121,7 +133,15 @@ iOS App 填入网关地址即可（同一局域网下走 HTTP 直连，延迟毫
 ## 与上游的主要差异
 
 - 新增 `platforms/android-watch`：OPPO Watch X 原生 App（本项目全部核心工作）；
-- iOS 端：规划阶段即向手表推送 BUILDING ROUTE 状态；允许局域网 HTTP 直连网关；限速牌透传；
+- iOS 端（v9~v15 重大升级）：
+  - **内嵌 AMapNaviKit 替代网关算路**：任何 manager 实例化前强制完成
+    `AMapSearchAPI`/`AMapNaviManagerConfig` 两步隐私合规；骑行/步行/摩托三引擎；
+  - **出行模式切换**：首页可选自行车/摩托，摩托走驾车引擎，耗时与路线实时不同；
+  - **规划增强**：UUID 身份化请求队列（防串话）、5 分钟结果缓存、全程耗时打点、
+    路线卡片显示红绿灯总数；
+  - **摩托限速**：算路后沿路线 600m 采样（GCJ-02→WGS-84 纠偏）查 OSM maxspeed
+    取众数，3 秒超时静默跳过——高德 iOS 导航 SDK 不透出限速数据，这是唯一免费来源；
+  - 规划阶段即向手表推送 BUILDING ROUTE 状态；局域网 HTTP 直连网关仍可选；
 - 网关：搜索 LRU 缓存（TTL 10min）、OSM 限速牌管道、能力位如实上报；
 - 手表端协议栈与上游 BLE v1 完全兼容（0xB7 帧、CRC-16/CCITT-FALSE、握手/心跳/看门狗）。
 

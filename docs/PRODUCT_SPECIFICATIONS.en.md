@@ -29,19 +29,19 @@ Sources: [Waveshare firmware notes](../platforms/esp32/README.en.md), [A1 status
 
 | Feature | Current implementation |
 | --- | --- |
-| Destination search | Location-biased search on the phone; falls back to an area or nationwide search when there are no nearby results; keeps at most 8 recent places |
-| Route preview | Full-route MapKit preview, at most 3 AMap candidate routes, compared by time, distance and traffic conditions before being started manually |
-| Navigation | Shared C++ route progress, arrival detection, consecutive off-route confirmation, reroute, stale-response discard and traffic refresh |
-| Round-display map | White selected route, heading up; grey roads and buildings are provided by the local map window |
-| Offline base map | Jinan SQLite vector package: 47,468 roads, 26,702 buildings; the phone clips the nearby window and sends it |
-| Page interaction | Swipe left and right to switch between the navigation, speedometer, compass and optional music pages; the page dots hide after 5 seconds |
-| Music | Apple Music previous track, play/pause, next track and track state |
-| Communication | BLE v1; CRC, fragmentation and reassembly, heartbeat, session validation and a two-phase handshake |
-| Power on / off | Startup with the logo on a black background; holding Waveshare PWR for 3 seconds for software power-off, 4 seconds for the PMIC hardware fallback configuration |
+| Destination search | Embedded AMapSearchAPI (two-step privacy compliance enforced up front); location-biased search; keeps at most 8 recent places |
+| Route preview | Full-route MapKit preview, up to 3 candidate routes compared by time, distance and traffic-light count; 5-minute result cache makes repeat planning instant |
+| Travel modes | Pick bicycle or motorcycle on the home screen: bicycle uses the riding engine; motorcycle uses the driving engine with its own routes and ETAs, icons and cards follow the mode |
+| Motorcycle speed limit | After planning, samples the polyline every ~600 m (GCJ-02→WGS-84 corrected) and queries OSM maxspeed, taking the modal value (ties to the smaller); 3 s timeout, silent skip. Riding/walking have no road-segment speed-limit concept and show none |
+| Navigation | Shared C++ route progress, arrival detection, consecutive off-route confirmation, reroute, stale-response discard |
+| Watch navigation page | White selected route heading up; large bold speed embedded below the top progress arc, red over the limit; road name, speed-limit badge, off-route notice |
+| Watch speed page | Full-screen speedometer: 270° color-graded arc, numbered ticks, analog needle, extra-large center number; in navigation, remaining distance, ETA and session max at the bottom |
+| Communication | BLE v1; CRC, fragmentation and reassembly, heartbeat, session validation and a two-phase handshake; snapshot 0x10 carries remaining distance/duration/speed, decoded over both BLE and Wi-Fi |
 
-The offline base map handles the surrounding-scene display and does not mean nationwide offline navigation. Normal route planning and rerouting use the online gateway;
-real navigation does not automatically turn into a demo route. The compass currently mainly expresses the direction of travel; a stationary true north reference and general third-party music control still have to be extended.
-The speed-limit sign is only shown when trustworthy data exists; the numbers in the first image are illustrative.
+The offline base map handles the surrounding-scene display and does not mean nationwide offline navigation. Normal route planning and rerouting use the embedded
+AMapNaviKit (fully usable without a gateway); real navigation does not automatically turn into a demo route. The compass currently mainly expresses the direction of travel;
+a stationary true north reference and general third-party music control still have to be extended. The speed-limit sign is only shown when trustworthy data exists:
+in motorcycle mode it comes from OSM maxspeed (coverage varies by road segment); riding/walking show none. The numbers in the first image are illustrative.
 
 ## V3 in-house enclosure parameters
 

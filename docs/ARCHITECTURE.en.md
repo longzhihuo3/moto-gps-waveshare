@@ -5,22 +5,48 @@
 # Architecture and data boundaries
 
 ```text
-iPhone CoreLocation (WGS84) ── HTTPS ── Node gateway ── AMap
-             │                              │           │
-             │       RouteBundle (GCJ-02) ◀──┴───────────┘
-             ▼
+iPhone CoreLocation (WGS84)
+        │
+        ├── Embedded AMapNaviKit (primary path, no gateway needed)
+        │     two-step privacy compliance → riding/walking/motorcycle planning
+        │     → UUID-identified queue → 5-min cache
+        │     motorcycle: post-planning OSM Overpass maxspeed enrichment (3s timeout, silent skip)
+        │
+        └── (optional) HTTPS → Node gateway → AMap Web services
+                  RouteBundle (GCJ-02)
+                  ▼
 shared C++ NavCore / NavApp (route progress and off-route logic runs on the iPhone)
              │
-       BLE snapshot + route + map window
+       BLE snapshot + route + map window (snapshot 0x10 carries remaining distance/duration/speed/limit)
              ▼
-ESP32 PhoneNavBridge + QMI8658 relative angular rate
+OPPO Watch X · Android app (heading fusion v3 + offscreen bitmap rendering)
              ▼
-shared NavPresenter → LVGL → CO5300 466×466
+466×466 round display: navigation / speedometer / music pages
 ```
 
 The iPhone is the authoritative end for the route and the position; the round display is not another independent route planner.
 For the BLE service and frame format see `shared/protocol/ble-navigation-v1.md`.
 Touch page changes and music buttons are passed back to the iPhone over BLE, and the iPhone calls Apple Music playback control.
+
+## Embedded navigation SDK (AMapNaviKit) boundaries
+
+- **Privacy compliance first**: `AMapSearchAPI` and `AMapNaviManagerConfig` both need
+  `updatePrivacyShow` / `updatePrivacyAgree` before any manager is instantiated,
+  otherwise search fails with "SDK not initialized";
+- **Bundle ID binding**: AMap keys are bound per Bundle ID. SideStore re-signing
+  rewrites it (the original is kept in `ALTBundleID`), producing `INVALID_USER_SCODE`
+  — rebind the device's real ID in the AMap console, then delete and reinstall;
+- **Callback signature trap**: SDK v11 renamed the success-callback selectors into
+  chained keywords; the Swift importer splits them into different argument labels.
+  Implementations must match the importer-generated signatures or they compile but
+  never fire;
+- **No speed-limit data**: neither planning results nor live navigation info carry a
+  speed limit. Motorcycle-mode limits are enriched from OSM Overpass maxspeed
+  (~600 m sampling, GCJ→WGS correction, 35 m matching, modal value to the smaller,
+  3 s timeout with a silent skip); riding/walking stay limit-less;
+- **Request identity**: planning sessions run through a UUID-identified queue —
+  completion/timeout are matched by ID, so concurrent sessions cannot cross-talk;
+  results are cached for 5 minutes (a ~55 m grid key) so repeat planning skips the SDK.
 
 The Jinan OSM SQLite database is stored on the iPhone only. The phone queries the roads and buildings around the vehicle and then sends a
 window of limited capacity to the round display; it is background scene data and does not provide offline search, nationwide route calculation or live traffic conditions.
