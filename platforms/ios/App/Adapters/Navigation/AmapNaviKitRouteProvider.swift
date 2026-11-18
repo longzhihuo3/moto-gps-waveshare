@@ -245,10 +245,10 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
                 let manager = AMapNaviDriveManager.sharedInstance()
                 manager.delegate = self
                 accepted = manager.calculateDriveRoute(
-                    withStartPoints: [start],
-                    endPoints: [end],
+                    withStart: [start],
+                    end: [end],
                     wayPoints: nil,
-                    drivingStrategy: .singleDefault
+                    drivingStrategy: .drivingStrategySingleDefault
                 )
             }
             if !accepted {
@@ -355,8 +355,10 @@ private final class AmapNaviKitPlanningSession: NSObject, AMapNaviRideManagerDel
     }
 
     private func finishWithRoutes(from manager: AMapNaviDriveManager, mode: AmapNaviKitRouteProvider.TravelMode) {
-        appendSdkLog("[app] drive success routes=\(manager.naviRoutes().count)")
-        finishWithRoutes(routeIDs: manager.naviRouteIDs(), routesByID: manager.naviRoutes(), mode: mode)
+        // Drive manager exposes naviRouteIDs/naviRoutes as properties (the
+        // ride/walk managers expose them as methods).
+        appendSdkLog("[app] drive success routes=\(manager.naviRoutes?.count ?? 0)")
+        finishWithRoutes(routeIDs: manager.naviRouteIDs ?? [], routesByID: manager.naviRoutes ?? [:], mode: mode)
     }
 
     private static func cacheKey(
